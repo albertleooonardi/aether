@@ -1,70 +1,100 @@
-# Getting Started with Create React App
+#  Vrijeme Weather App 🌦️
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+<p align="center">
+  </p>
 
-## Available Scripts
+<p align="center">
+  A clean, modern, and responsive weather dashboard built with React.
+</p>
 
-In the project directory, you can run:
+<p align="center">
+  <img src="https://placehold.co/600x400/3B82F6/FFFFFF?text=Vrijeme+App+Screenshot" alt="Vrijeme App Screenshot" width="100%"/>
+</p>
 
-### `npm start`
+## About The Project
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+**Vrijeme** (Bosnian/Croatian/Serbian for "Weather") is a frontend-only React application that provides real-time weather data and a 3-day forecast for any city. It's designed to be simple, fast, and visually appealing, with a dynamic UI that changes based on the weather conditions and time of day.
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+This project was built to demonstrate proficiency in:
+* React Hooks (`useState`, `useEffect`)
+* Fetching data from a third-party API
+* Component-based UI design
+* Responsive styling with Tailwind CSS
+* Using browser `localStorage` to persist data
 
-### `npm test`
+---
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+## ✨ Key Features
 
-### `npm run build`
+* ☀️ **Current Weather:** Get up-to-the-minute details, including temperature, "feels like" temperature, humidity, and wind speed.
+* 📅 **3-Day Forecast:** Plan ahead with a simple forecast showing highs, lows, and weather conditions.
+* 🔍 **Global City Search:** Find the weather for any location in the world.
+* 💾 **Saved Location:** The app remembers your last searched city and loads it automatically on your next visit.
+* 🎨 **Dynamic UI:** The background gradient and weather icons change to match the current conditions (e.g., sunny, rainy, cloudy, night).
+* 📱 **Fully Responsive:** Looks great on all devices, from mobile phones to desktops.
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+---
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+## 🛠️ Technologies Used
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+* [React](https://reactjs.org/) - A JavaScript library for building user interfaces.
+* [Tailwind CSS](https://tailwindcss.com/) - A utility-first CSS framework for rapid UI development.
+* [Lucide React](https://lucide.dev/) - A library of beautiful and simple icons.
+* [WeatherAPI.com](https://www.weatherapi.com/) - The free API used to source all weather data.
 
-### `npm run eject`
+---
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+## 🚀 Getting Started
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+To get a local copy up and running, follow these simple steps.
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+### Prerequisites
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+You will need the following software installed on your machine:
+* [Node.js](https://nodejs.org/en/) (v18 or newer recommended)
+* [npm](https://www.npmjs.com/) (comes with Node.js)
 
-## Learn More
+### 1. Clone the Repository
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+Clone this project's repository to your local machine:
+```sh
+git clone [https://github.com/your-username/vrijeme-weather-app.git](https://github.com/your-username/vrijeme-weather-app.git)
+cd vrijeme-weather-app
 
-To learn React, check out the [React documentation](https://reactjs.org/).
 
-### Code Splitting
+2. Install Dependencies
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+Install all the necessary npm packages:
 
-### Analyzing the Bundle Size
+```npm install```
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+You will also need to install `lucide-react`:
 
-### Making a Progressive Web App
+```npm install lucide-react```
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
+3. Set Up Your API Key
 
-### Advanced Configuration
+This project requires a free API key from WeatherAPI.com.
+1. Go to WeatherAPI.com and sign up for a free plan.
+2. Once you have your API key, open the project in your code editor.
+3. Navigate to the main React component file (e.g., src/WeatherDashboard.jsx or src/App.jsx).
+4. Find the following line of code:
+```const API_KEY = 'YOUR_API_KEY_HERE';```
+5. Replace 'YOUR_API_KEY_HERE' with your actual API key (keep the quotes).
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
+4. Run the Application
 
-### Deployment
+Start the local development server:
+```npm start```
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
+(Or npm run dev if you are using a tool like Vite)
 
-### `npm run build` fails to minify
+Open http://localhost:3000 (or the port shown in your terminal) in your browser to see the app.
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+📄 License
+This project is open-source and available under the MIT License.
+
+* Acknowledgements
+* Data provided by
+
+Icons by
