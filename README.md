@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <img src="https://placehold.co/600x400/3B82F6/FFFFFF?text=Vrijeme+App+Screenshot" alt="Vrijeme App Screenshot" width="100%"/>
+  <img src="./public/image.png" alt="Vrijeme App Screenshot" width="100%"/>
 </p>
 
 ## About The Project
@@ -54,10 +54,10 @@ You will need the following software installed on your machine:
 * [Node.js](https://nodejs.org/en/) (v18 or newer recommended)
 * [npm](https://www.npmjs.com/) (comes with Node.js)
 
-### 1. Clone the Repository
+1. Clone the Repository
 
 Clone this project's repository to your local machine:
-```sh
+
 git clone [https://github.com/your-username/vrijeme-weather-app.git](https://github.com/your-username/vrijeme-weather-app.git)
 cd vrijeme-weather-app
 
@@ -66,35 +66,44 @@ cd vrijeme-weather-app
 
 Install all the necessary npm packages:
 
-```npm install```
+npm install
+npm install lucide-react
 
-You will also need to install `lucide-react`:
-
-```npm install lucide-react```
 
 3. Set Up Your API Key
 
 This project requires a free API key from WeatherAPI.com.
-1. Go to WeatherAPI.com and sign up for a free plan.
-2. Once you have your API key, open the project in your code editor.
-3. Navigate to the main React component file (e.g., src/WeatherDashboard.jsx or src/App.jsx).
-4. Find the following line of code:
-```const API_KEY = 'YOUR_API_KEY_HERE';```
-5. Replace 'YOUR_API_KEY_HERE' with your actual API key (keep the quotes).
+
+Go to WeatherAPI.com and sign up for a free plan.
+
+Once you have your API key, open the project in your code editor.
+
+Navigate to the main React component file (e.g., src/WeatherDashboard.jsx or src/App.jsx).
+
+Find the following line of code:
+
+const API_KEY = 'YOUR_API_KEY_HERE';
+
+
+Replace 'YOUR_API_KEY_HERE' with your actual API key (keep the quotes).
 
 4. Run the Application
 
 Start the local development server:
-```npm start```
+
+npm start
+
 
 (Or npm run dev if you are using a tool like Vite)
 
 Open http://localhost:3000 (or the port shown in your terminal) in your browser to see the app.
 
 📄 License
+
 This project is open-source and available under the MIT License.
 
-* Acknowledgements
-* Data provided by
+Acknowledgements
 
-Icons by
+Data provided by WeatherAPI.com
+
+Icons by Lucide
