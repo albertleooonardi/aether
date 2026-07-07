@@ -1,0 +1,48 @@
+/*
+ * Zircon font faces. This file is served statically from /public (not bundled
+ * by webpack), so if the font files are missing the browser simply falls back
+ * to Inter instead of failing the build.
+ *
+ * Drop the files into public/fonts/ (see public/fonts/README.md).
+ * .woff is optional — delete those lines if you only have .woff2.
+ */
+@font-face {
+  font-family: 'Zircon';
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  src: url('./fonts/Zircon-Regular.woff2') format('woff2'),
+       url('./fonts/Zircon-Regular.woff') format('woff');
+}
+@font-face {
+  font-family: 'Zircon';
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+  src: url('./fonts/Zircon-Medium.woff2') format('woff2'),
+       url('./fonts/Zircon-Medium.woff') format('woff');
+}
+@font-face {
+  font-family: 'Zircon';
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+  src: url('./fonts/Zircon-SemiBold.woff2') format('woff2'),
+       url('./fonts/Zircon-SemiBold.woff') format('woff');
+}
+@font-face {
+  font-family: 'Zircon';
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+  src: url('./fonts/Zircon-Bold.woff2') format('woff2'),
+       url('./fonts/Zircon-Bold.woff') format('woff');
+}
+@font-face {
+  font-family: 'Zircon';
+  font-weight: 800;
+  font-style: normal;
+  font-display: swap;
+  src: url('./fonts/Zircon-ExtraBold.woff2') format('woff2'),
+       url('./fonts/Zircon-ExtraBold.woff') format('woff');
+}

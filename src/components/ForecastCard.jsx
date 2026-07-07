@@ -1,31 +1,41 @@
 import React from 'react';
+import { CalendarDays } from 'lucide-react';
 import { getWeatherIcon } from '../utils/WeatherIcons';
 
-const ForecastCard = ({ forecast, textColor, isDark }) => {
+const ForecastCard = ({ forecast }) => {
+  const today = new Date().toDateString();
+
   return (
-    <div className={`${isDark ? 'bg-gray-800' : 'bg-white'} border-2 ${isDark ? 'border-gray-700' : 'border-gray-300'} rounded-2xl p-6 shadow-xl`}>
-      <h3 className={`text-2xl font-bold ${textColor} mb-4`}>3-Day Forecast</h3>
-      <div className="grid md:grid-cols-3 gap-4">
-        {forecast.map((day, idx) => (
-          <div key={idx} className={`${isDark ? 'bg-gray-700' : 'bg-gray-100'} rounded-lg p-4 text-center`}>
-            <div className={`${textColor} font-semibold mb-2`}>
-              {day.date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
+    <div className="rounded-3xl glass p-5">
+      <div className="mb-4 flex items-center gap-2 border-b border-white/10 pb-3">
+        <CalendarDays size={16} className="text-white/60" />
+        <h3 className="text-xs font-semibold uppercase tracking-widest text-white/70">
+          {forecast.length}-Day Forecast
+        </h3>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-3">
+        {forecast.map((day, idx) => {
+          const isToday = day.date.toDateString() === today;
+          return (
+            <div
+              key={idx}
+              className={`flex flex-col items-center gap-2 rounded-2xl px-3 py-4 text-center transition-colors ${
+                isToday ? 'glass border-white/20' : 'glass-soft glass-hover'
+              }`}
+            >
+              <span className="text-sm font-semibold text-white">
+                {isToday ? 'Today' : day.date.toLocaleDateString('en-US', { weekday: 'short' })}
+              </span>
+              <span className="text-[11px] text-white/50">
+                {day.date.toLocaleDateString('en-US', { day: '2-digit', month: '2-digit' })}
+              </span>
+              <span className="mt-1 text-2xl font-bold text-white">{day.high}°</span>
+              <span className="text-xs text-white/55">{day.low}°</span>
+              <div className="mt-1">{getWeatherIcon(day.weather, 30)}</div>
             </div>
-            <div className="flex justify-center mb-3">
-              {getWeatherIcon(day.weather, 40)}
-            </div>
-            <div className={`flex justify-center gap-4 ${textColor}`}>
-              <div>
-                <div className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>High</div>
-                <div className="font-bold text-lg">{day.high}°</div>
-              </div>
-              <div>
-                <div className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>Low</div>
-                <div className="font-bold text-lg">{day.low}°</div>
-              </div>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

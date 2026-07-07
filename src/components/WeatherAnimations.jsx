@@ -3,8 +3,9 @@ import { getTimeOfDay } from '../utils/TimeUtils';
 
 const WeatherAnimations = ({ weather }) => {
   if (!weather) return null;
-  
+
   const timeOfDay = getTimeOfDay(weather);
+  const isNight = weather.isDay === 0;
   const text = weather.icon.toLowerCase();
   
   // Determine rain intensity
@@ -123,8 +124,14 @@ const WeatherAnimations = ({ weather }) => {
   );
 
   const SunriseAnimation = () => (
-    <div className="fixed bottom-0 left-1/2 transform -translate-x-1/2 w-96 h-96 pointer-events-none z-0">
-      <div className="absolute inset-0 bg-gradient-radial from-yellow-200/30 via-orange-200/20 to-transparent rounded-full animate-pulse" />
+    <div className="fixed bottom-0 left-1/2 h-[28rem] w-[28rem] -translate-x-1/2 pointer-events-none z-0">
+      <div className="absolute inset-0 rounded-full bg-gradient-radial from-amber-200/25 via-orange-200/10 to-transparent animate-pulse-slow" />
+    </div>
+  );
+
+  const SunAnimation = () => (
+    <div className="fixed -top-24 right-4 h-72 w-72 pointer-events-none z-0 md:right-16">
+      <div className="absolute inset-0 rounded-full bg-gradient-radial from-amber-100/25 via-amber-200/10 to-transparent animate-pulse-slow" />
     </div>
   );
 
@@ -167,14 +174,17 @@ const WeatherAnimations = ({ weather }) => {
     return <CloudAnimation />;
   }
   
-  // Time-based animations for clear weather
+  // Time-based ambience for clear weather
   if (timeOfDay === 'sunrise' || timeOfDay === 'sunset') {
     return <SunriseAnimation />;
   }
-  if (timeOfDay === 'night') {
+  if (isNight) {
     return <StarsAnimation />;
   }
-  
+  if (text.includes('sunny') || text.includes('clear')) {
+    return <SunAnimation />;
+  }
+
   return null;
 };
 

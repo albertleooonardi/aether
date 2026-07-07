@@ -2,7 +2,7 @@ const API_KEY = 'd5f1cded8f934b728a581408251711';
 const BASE_URL = 'https://api.weatherapi.com/v1';
 
 export const fetchWeatherByCoords = async (lat, lon) => {
-  const url = `${BASE_URL}/forecast.json?key=${API_KEY}&q=${lat},${lon}&days=4&aqi=no`;
+  const url = `${BASE_URL}/forecast.json?key=${API_KEY}&q=${lat},${lon}&days=4&aqi=yes`;
   console.log('Fetching weather by coords:', url);
   
   const response = await fetch(url);
@@ -19,7 +19,7 @@ export const fetchWeatherByCoords = async (lat, lon) => {
 };
 
 export const fetchWeatherByCity = async (cityName) => {
-  const url = `${BASE_URL}/forecast.json?key=${API_KEY}&q=${cityName}&days=4&aqi=no`;
+  const url = `${BASE_URL}/forecast.json?key=${API_KEY}&q=${cityName}&days=4&aqi=yes`;
   console.log('Fetching weather by city:', url);
   
   const response = await fetch(url);

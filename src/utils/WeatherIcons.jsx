@@ -1,35 +1,61 @@
 import React from 'react';
-import { Sun, Cloud, CloudRain, CloudSnow, CloudDrizzle, CloudFog } from 'lucide-react';
+import {
+  Sun,
+  Moon,
+  Cloud,
+  CloudRain,
+  CloudSnow,
+  CloudDrizzle,
+  CloudFog,
+  CloudLightning,
+  CloudSun,
+  CloudMoon,
+} from 'lucide-react';
 
-export const getWeatherIcon = (weatherText, size = 48) => {
-  const iconProps = { size, strokeWidth: 1.5 };
-  const text = weatherText.toLowerCase();
-  
-  // Clear/Sunny
-  if (text.includes('sunny') || text.includes('clear')) {
-    return <Sun {...iconProps} className="text-gray-900" />;
-  }
-  // Rain
-  if (text.includes('rain') && !text.includes('drizzle')) {
-    return <CloudRain {...iconProps} className="text-gray-800" />;
-  }
-  // Drizzle
-  if (text.includes('drizzle') || text.includes('light rain')) {
-    return <CloudDrizzle {...iconProps} className="text-gray-700" />;
+// Vibrant, softly-shadowed icons that sit nicely on frosted glass.
+export const getWeatherIcon = (weatherText, size = 48, isDay = 1) => {
+  const props = { size, strokeWidth: 1.5, className: 'drop-glow' };
+  const text = (weatherText || '').toLowerCase();
+  const night = isDay === 0;
+
+  // Thunderstorm
+  if (text.includes('thunder')) {
+    return <CloudLightning {...props} className={`${props.className} text-violet-200`} />;
   }
   // Snow
-  if (text.includes('snow') || text.includes('blizzard') || text.includes('sleet')) {
-    return <CloudSnow {...iconProps} className="text-gray-600" />;
+  if (text.includes('snow') || text.includes('blizzard') || text.includes('sleet') || text.includes('ice')) {
+    return <CloudSnow {...props} className={`${props.className} text-sky-100`} />;
   }
-  // Fog/Mist
+  // Drizzle / light rain
+  if (text.includes('drizzle') || text.includes('light rain')) {
+    return <CloudDrizzle {...props} className={`${props.className} text-sky-200`} />;
+  }
+  // Rain
+  if (text.includes('rain')) {
+    return <CloudRain {...props} className={`${props.className} text-blue-200`} />;
+  }
+  // Fog / mist / haze
   if (text.includes('mist') || text.includes('fog') || text.includes('haze')) {
-    return <CloudFog {...iconProps} className="text-gray-600" />;
+    return <CloudFog {...props} className={`${props.className} text-slate-200`} />;
   }
-  // Cloudy (default)
+  // Cloudy / overcast (partly cloudy gets a sun/moon combo)
+  if (text.includes('partly') || text.includes('partial')) {
+    return night
+      ? <CloudMoon {...props} className={`${props.className} text-indigo-100`} />
+      : <CloudSun {...props} className={`${props.className} text-amber-100`} />;
+  }
   if (text.includes('cloud') || text.includes('overcast')) {
-    return <Cloud {...iconProps} className="text-gray-700" />;
+    return <Cloud {...props} className={`${props.className} text-slate-100`} />;
   }
-  
+  // Clear / sunny
+  if (text.includes('sunny') || text.includes('clear')) {
+    return night
+      ? <Moon {...props} className={`${props.className} text-indigo-100`} />
+      : <Sun {...props} className={`${props.className} text-amber-200`} />;
+  }
+
   // Default
-  return <Cloud {...iconProps} className="text-gray-700" />;
+  return night
+    ? <Moon {...props} className={`${props.className} text-indigo-100`} />
+    : <Cloud {...props} className={`${props.className} text-slate-100`} />;
 };

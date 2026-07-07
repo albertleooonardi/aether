@@ -1,9 +1,74 @@
-@import url('https://fonts.googleapis.com/css2?family=Stack+Sans+Headline:wght@200..700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-body{
-  font-family: "Stack Sans Headline", sans-serif;
+/* Zircon @font-face lives in public/fonts.css (static, so missing files fall
+ * back to Inter without breaking the build). See public/fonts/README.md. */
+
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  font-family: 'Zircon', 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  color: #fff;
+}
+
+@layer utilities {
+  /* Frosted glass surface */
+  .glass {
+    background: rgba(255, 255, 255, 0.08);
+    backdrop-filter: blur(22px) saturate(160%);
+    -webkit-backdrop-filter: blur(22px) saturate(160%);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    box-shadow:
+      0 10px 40px rgba(0, 0, 0, 0.22),
+      inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  }
+
+  /* Lighter inner glass used for nested tiles */
+  .glass-soft {
+    background: rgba(255, 255, 255, 0.06);
+    backdrop-filter: blur(12px) saturate(140%);
+    -webkit-backdrop-filter: blur(12px) saturate(140%);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  .glass-hover {
+    transition:
+      transform 0.4s cubic-bezier(0.22, 1, 0.36, 1),
+      background 0.4s ease,
+      border-color 0.4s ease,
+      box-shadow 0.4s ease;
+  }
+
+  .glass-hover:hover {
+    transform: translateY(-5px);
+    background: rgba(255, 255, 255, 0.13);
+    border-color: rgba(255, 255, 255, 0.28);
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
+  }
+
+  .text-glow {
+    text-shadow: 0 2px 24px rgba(0, 0, 0, 0.28);
+  }
+
+  .drop-glow {
+    filter: drop-shadow(0 4px 16px rgba(0, 0, 0, 0.25));
+  }
+
+  /* Hide scrollbar for horizontal scroll rows */
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
 }
