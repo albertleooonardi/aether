@@ -4,27 +4,40 @@ import { fetchCurrent } from './WeatherService';
 
 const OSRM = 'https://router.project-osrm.org/route/v1/driving';
 
+export const routeError = (message, code) => Object.assign(new Error(message), { code });
+
+// OSRM answers "these points aren't connected by road" with HTTP 400 + a JSON
+// body ({ code: 'NoRoute' }), so a non-OK status alone does NOT mean the service
+// is down. Always read the body first: a payload carrying `code` is a real
+// answer, and only a bodyless failure (5xx, rate-limit, network) is an outage.
+const readOsrm = async (res) => {
+  const data = await res.json().catch(() => null);
+  if (data && data.code) return data;
+  throw routeError('Routing service unavailable', 'unavailable');
+};
+
 // Prefer the backend proxy (server-side, retried, no browser rate-limit); fall
 // back to calling the public OSRM demo directly if the backend isn't running.
 const fetchOsrm = async (origin, dest) => {
   try {
     const res = await fetch(`/api/route?from=${origin.lat},${origin.lon}&to=${dest.lat},${dest.lon}`);
-    if (res.ok) {
-      const data = await res.json();
-      if (data && data.code) return data;
-    }
+    const data = await res.json().catch(() => null);
+    if (data && data.code) return data;
   } catch {
     /* backend down → fall back */
   }
   const url = `${OSRM}/${origin.lon},${origin.lat};${dest.lon},${dest.lat}?alternatives=true&overview=full&geometries=geojson`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error('Routing service unavailable');
-  return res.json();
+  return readOsrm(await fetch(url));
 };
 
+const finite = (p) => p && Number.isFinite(p.lat) && Number.isFinite(p.lon);
+
 export const getRoutes = async (origin, dest) => {
+  if (!finite(origin) || !finite(dest)) throw routeError('Missing map coordinates', 'bad_coords');
+
   const data = await fetchOsrm(origin, dest);
-  if (data.code !== 'Ok' || !data.routes?.length) throw new Error('No route found');
+  if (data.code === 'NoRoute') throw routeError('No driving route between those places', 'no_route');
+  if (data.code !== 'Ok' || !data.routes?.length) throw routeError('No route found', 'no_route');
 
   return data.routes.slice(0, 3).map((r) => ({
     // GeoJSON is [lng, lat]; Leaflet wants [lat, lng].

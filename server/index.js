@@ -231,15 +231,32 @@ async function generate(messages, context) {
 }
 
 /* ---------------- geocode + routing proxies ---------------- */
-async function handleGeocode(q, res) {
+// Nominatim ranks globally, so an unbiased "Grand Indonesia" resolves to a
+// consulate in Ghana. `near` (lat,lon) prefers candidates within a day's drive;
+// the box is a preference, not a bound (no `bounded=1`), so distant cities still
+// resolve. Among the survivors take the highest `importance` rather than the
+// first hit, or a minor hamlet outranks the city of the same name.
+const VIEW_DEG = 3;
+
+const viewboxOf = (near) => {
+  const p = (near || '').split(',').map(Number);
+  if (p.length !== 2 || !p.every(Number.isFinite)) return '';
+  const [lat, lon] = p;
+  return `&viewbox=${lon - VIEW_DEG},${lat - VIEW_DEG},${lon + VIEW_DEG},${lat + VIEW_DEG}`;
+};
+
+const mostImportant = (arr) =>
+  arr.reduce((a, b) => ((b.importance || 0) > (a.importance || 0) ? b : a));
+
+async function handleGeocode(q, near, res) {
   if (!q) return json(res, 400, { error: 'missing_q' });
   try {
     const { status, data } = await fetchJSON(
-      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=1`,
+      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=5${viewboxOf(near)}`,
       { 'User-Agent': 'AetherAI/1.0 (Aether weather app)', Accept: 'application/json' }
     );
     if (status === 200 && Array.isArray(data) && data.length) {
-      const l = data[0];
+      const l = mostImportant(data);
       const label = l.display_name.split(',').slice(0, 2).join(',').trim();
       return json(res, 200, { name: l.name || label, label, lat: parseFloat(l.lat), lon: parseFloat(l.lon) });
     }
@@ -258,6 +275,10 @@ async function handleRoute(from, to, res) {
     try {
       const { status, data } = await fetchJSON(url);
       if (status === 200 && data && data.code === 'Ok') return json(res, 200, data);
+      // OSRM reports NoRoute/InvalidQuery as 4xx with a JSON `code`. That is a
+      // definitive answer, not an outage — forward it instead of burning retries
+      // and collapsing it into a misleading "unavailable".
+      if (data && data.code) return json(res, 200, data);
     } catch {
       /* retry */
     }
@@ -300,7 +321,7 @@ const server = http.createServer((req, res) => {
     return json(res, 200, snapshot());
   }
   if (req.method === 'GET' && pathname === '/api/geocode') {
-    return handleGeocode(params.q, res);
+    return handleGeocode(params.q, params.near, res);
   }
   if (req.method === 'GET' && pathname === '/api/route') {
     return handleRoute(params.from, params.to, res);

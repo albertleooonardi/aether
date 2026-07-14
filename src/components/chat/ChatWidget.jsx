@@ -163,8 +163,9 @@ const ChatWidget = ({ weather }) => {
 
   const handleNavigation = async (nav) => {
     const w = weatherRef.current;
+    const here = w && Number.isFinite(w.lat) ? { lat: w.lat, lon: w.lon } : null;
     const originLoc = nav.originText
-      ? await geocode(nav.originText)
+      ? await geocode(nav.originText, here)
       : w
       ? { name: w.city, lat: w.lat, lon: w.lon }
       : null;
@@ -176,7 +177,8 @@ const ChatWidget = ({ weather }) => {
           : 'Search a city in the app first so I can use it as your starting point.'
       );
     }
-    const destLoc = await geocode(nav.destText);
+    // Bias the destination search around the origin — you drive from there.
+    const destLoc = await geocode(nav.destText, originLoc);
     if (!destLoc) {
       return sayAssistant(`I couldn't find “${nav.destText}”. Try a more specific name (add the city).`);
     }
@@ -185,7 +187,11 @@ const ChatWidget = ({ weather }) => {
     try {
       result = await getRoutesWithRain(originLoc, destLoc);
     } catch (err) {
-      return sayAssistant(`I couldn't fetch driving directions right now (${err.message}).`);
+      return sayAssistant(
+        err.code === 'no_route'
+          ? `I couldn't find a driving route from **${originLoc.name}** to **${destLoc.name}** — they don't look connected by road. If I picked the wrong “${nav.destText}”, try adding the city.`
+          : `I couldn't fetch driving directions right now (${err.message}).`
+      );
     }
 
     const best = result.routes[result.bestIndex];
