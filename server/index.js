@@ -231,39 +231,64 @@ async function generate(messages, context) {
 }
 
 /* ---------------- geocode + routing proxies ---------------- */
-// Nominatim ranks globally, so an unbiased "Grand Indonesia" resolves to a
-// consulate in Ghana. `near` (lat,lon) prefers candidates within a day's drive;
-// the box is a preference, not a bound (no `bounded=1`), so distant cities still
-// resolve. Among the survivors take the highest `importance` rather than the
-// first hit, or a minor hamlet outranks the city of the same name.
+// Both geocoders read the same OSM data, but Photon indexes POIs far better:
+// "Grand Indonesia" finds the mall, where Nominatim returns a convention centre
+// 30km away and ranks a hamlet above the city of Bandung. Photon leads; Nominatim
+// stays as a fallback for when it's unreachable.
+const PHOTON = 'https://photon.komoot.io/api';
+const NOMINATIM = 'https://nominatim.openstreetmap.org/search';
+
+const coords = (near) => {
+  const p = (near || '').split(',').map(Number);
+  return p.length === 2 && p.every(Number.isFinite) ? { lat: p[0], lon: p[1] } : null;
+};
+
+// A preference, not a bound — distant cities must still resolve.
 const VIEW_DEG = 3;
 
-const viewboxOf = (near) => {
-  const p = (near || '').split(',').map(Number);
-  if (p.length !== 2 || !p.every(Number.isFinite)) return '';
-  const [lat, lon] = p;
-  return `&viewbox=${lon - VIEW_DEG},${lat - VIEW_DEG},${lon + VIEW_DEG},${lat + VIEW_DEG}`;
-};
+const viewboxOf = (c) =>
+  c ? `&viewbox=${c.lon - VIEW_DEG},${c.lat - VIEW_DEG},${c.lon + VIEW_DEG},${c.lat + VIEW_DEG}` : '';
 
 const mostImportant = (arr) =>
   arr.reduce((a, b) => ((b.importance || 0) > (a.importance || 0) ? b : a));
 
+async function viaPhoton(q, c) {
+  const bias = c ? `&lat=${c.lat}&lon=${c.lon}` : '';
+  const { status, data } = await fetchJSON(`${PHOTON}?q=${encodeURIComponent(q)}&limit=5&lang=en${bias}`, {
+    'User-Agent': 'AetherAI/1.0 (Aether weather app)',
+  });
+  const f = status === 200 && data && data.features && data.features[0];
+  if (!f) return null;
+  const p = f.properties || {};
+  const [lon, lat] = f.geometry.coordinates;
+  const name = p.name || p.street || p.city;
+  if (!name || !Number.isFinite(lat)) return null;
+  return { name, label: [name, p.city || p.state, p.country].filter(Boolean).join(', '), lat, lon };
+}
+
+async function viaNominatim(q, c) {
+  const { status, data } = await fetchJSON(
+    `${NOMINATIM}?q=${encodeURIComponent(q)}&format=json&limit=5${viewboxOf(c)}`,
+    { 'User-Agent': 'AetherAI/1.0 (Aether weather app)', Accept: 'application/json' }
+  );
+  if (status !== 200 || !Array.isArray(data) || !data.length) return null;
+  const l = mostImportant(data);
+  const label = l.display_name.split(',').slice(0, 2).join(',').trim();
+  return { name: l.name || label, label, lat: parseFloat(l.lat), lon: parseFloat(l.lon) };
+}
+
 async function handleGeocode(q, near, res) {
   if (!q) return json(res, 400, { error: 'missing_q' });
-  try {
-    const { status, data } = await fetchJSON(
-      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=5${viewboxOf(near)}`,
-      { 'User-Agent': 'AetherAI/1.0 (Aether weather app)', Accept: 'application/json' }
-    );
-    if (status === 200 && Array.isArray(data) && data.length) {
-      const l = mostImportant(data);
-      const label = l.display_name.split(',').slice(0, 2).join(',').trim();
-      return json(res, 200, { name: l.name || label, label, lat: parseFloat(l.lat), lon: parseFloat(l.lon) });
+  const c = coords(near);
+  for (const lookup of [viaPhoton, viaNominatim]) {
+    try {
+      const hit = await lookup(q, c);
+      if (hit) return json(res, 200, hit);
+    } catch {
+      /* try the next provider */
     }
-    return json(res, 404, { error: 'not_found' });
-  } catch (e) {
-    return json(res, 502, { error: e.message || 'geocode_failed' });
   }
+  return json(res, 404, { error: 'not_found' });
 }
 
 async function handleRoute(from, to, res) {

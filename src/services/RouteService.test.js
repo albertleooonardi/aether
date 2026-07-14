@@ -1,4 +1,7 @@
-import { getRoutes } from './RouteService';
+import { getRoutes, assessRain } from './RouteService';
+import { fetchCurrent } from './WeatherService';
+
+jest.mock('./WeatherService', () => ({ fetchCurrent: jest.fn() }));
 
 // OSRM signals "no road connects these points" as HTTP 400 with a JSON body, so
 // status alone can't tell a real outage from a definitive answer.
@@ -60,4 +63,53 @@ test('non-finite coordinates never reach the network', async () => {
 
   await expect(getRoutes({ lat: undefined, lon: undefined }, BDG)).rejects.toMatchObject({ code: 'bad_coords' });
   expect(global.fetch).not.toHaveBeenCalled();
+});
+
+/* ---------------- rain assessment ---------------- */
+
+const route = { coordinates: [[-6.1, 106.8], [-6.5, 107.1], [-6.9, 107.6]] };
+const conditions = (code, precip_mm = 0) => ({ current: { precip_mm, condition: { code } } });
+
+test('"Patchy rain nearby" (1063) is not rain — the tropics are not permanently wet', async () => {
+  // The old text match counted this, so every route came back "wet".
+  fetchCurrent.mockResolvedValue(conditions(1063, 0));
+
+  const rain = await assessRain(route);
+  expect(rain).toMatchObject({ rainy: 0, level: 'dry' });
+});
+
+test('"Thundery outbreaks in nearby" (1087) is not rain either', async () => {
+  fetchCurrent.mockResolvedValue(conditions(1087, 0));
+
+  expect(await assessRain(route)).toMatchObject({ rainy: 0, level: 'dry' });
+});
+
+test('drizzle (1153) counts as rain even though its label omits the word', async () => {
+  // The old text match missed this entirely.
+  fetchCurrent.mockResolvedValue(conditions(1153, 0.2));
+
+  const rain = await assessRain(route);
+  expect(rain.rainy).toBe(3);
+  expect(rain.level).toBe('wet');
+});
+
+test('actual moderate rain still reports wet', async () => {
+  fetchCurrent.mockResolvedValue(conditions(1189, 1.5));
+
+  expect(await assessRain(route)).toMatchObject({ rainy: 3, level: 'wet' });
+});
+
+test('a single light-rain point reads as light, not a downpour', async () => {
+  fetchCurrent
+    .mockResolvedValueOnce(conditions(1183, 0.1))
+    .mockResolvedValueOnce(conditions(1000, 0))
+    .mockResolvedValueOnce(conditions(1003, 0));
+
+  expect(await assessRain(route)).toMatchObject({ rainy: 1, level: 'light' });
+});
+
+test('when every sample fails it reports unknown, not a confident "dry"', async () => {
+  fetchCurrent.mockRejectedValue(new Error('quota exceeded'));
+
+  expect(await assessRain(route)).toMatchObject({ samples: 0, level: 'unknown' });
 });

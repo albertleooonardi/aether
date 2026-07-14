@@ -3,15 +3,17 @@
 // plain city names if Nominatim is unavailable.
 import { WEATHER_API_KEY, WEATHER_BASE_URL } from './config';
 
+const PHOTON = 'https://photon.komoot.io/api';
 const NOMINATIM = 'https://nominatim.openstreetmap.org/search';
 
 const shortName = (displayName) => displayName.split(',').slice(0, 2).join(',').trim();
 
-// Nominatim ranks globally, so an unbiased "Grand Indonesia" resolves to a
-// consulate in Ghana. `near` ({lat,lon}) prefers candidates within a day's drive;
-// the box is a preference, not a bound (no `bounded=1`), so distant cities still
-// resolve. Among the survivors take the highest `importance` rather than the
-// first hit, or a minor hamlet outranks the city of the same name.
+// Both geocoders read the same OSM data, but Photon indexes POIs far better:
+// "Grand Indonesia" finds the mall, where Nominatim returns a convention centre
+// 30km away and ranks a hamlet above the city of Bandung. `near` ({lat,lon})
+// biases both toward the user; for Nominatim the viewbox is a preference, not a
+// bound (no `bounded=1`), so distant cities still resolve, and we take the
+// highest `importance` rather than its first hit.
 const VIEW_DEG = 3;
 
 const viewboxOf = (near) =>
@@ -36,7 +38,26 @@ export const geocode = async (query, near) => {
     /* backend down → fall back to direct calls below */
   }
 
-  // 2) Direct Nominatim.
+  // 2) Direct Photon.
+  try {
+    const at = near && Number.isFinite(near.lat) ? `&lat=${near.lat}&lon=${near.lon}` : '';
+    const res = await fetch(`${PHOTON}?q=${encodeURIComponent(query)}&limit=5&lang=en${at}`);
+    if (res.ok) {
+      const f = (await res.json()).features?.[0];
+      const p = f?.properties;
+      const name = p && (p.name || p.street || p.city);
+      if (name) {
+        const [lon, lat] = f.geometry.coordinates;
+        if (Number.isFinite(lat)) {
+          return { name, label: [name, p.city || p.state, p.country].filter(Boolean).join(', '), lat, lon };
+        }
+      }
+    }
+  } catch {
+    /* fall through to Nominatim */
+  }
+
+  // 3) Direct Nominatim.
   try {
     const url = `${NOMINATIM}?q=${encodeURIComponent(query)}&format=json&limit=5&addressdetails=0${viewboxOf(near)}`;
     const res = await fetch(url, { headers: { Accept: 'application/json' } });

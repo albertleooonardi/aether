@@ -195,18 +195,25 @@ const ChatWidget = ({ weather }) => {
     }
 
     const best = result.routes[result.bestIndex];
-    const lvlWord = { dry: 'looks dry the whole way', light: 'has some light rain', wet: 'runs into rain' }[best.rain.level];
+    const WORD = {
+      dry: 'looks dry the whole way',
+      light: 'catches a little light rain',
+      wet: 'runs into rain',
+      unknown: "couldn't be checked for rain",
+    };
+    const ADVICE = {
+      dry: '\n☂️ You should stay dry — no umbrella needed.',
+      light: '\n🌂 Maybe pack an umbrella — only light rain on the way.',
+      wet: '\n☔ Take an umbrella — expect rain along the way.',
+      unknown: '\n🤷 I couldn’t reach the weather service for this route, so I can’t call it either way.',
+    };
+    const lvl = best.rain.level;
     let summary = `Here's the route from **${originLoc.name}** to **${destLoc.name}**.\n`;
     summary +=
       result.routes.length > 1
-        ? `I compared ${result.routes.length} routes — the **recommended** one is ${best.distanceKm.toFixed(1)} km (~${Math.round(best.durationMin)} min) and ${lvlWord}.`
-        : `It's ${best.distanceKm.toFixed(1)} km (~${Math.round(best.durationMin)} min) and ${lvlWord}.`;
-    if (nav.asksRain || best.rain.level !== 'dry') {
-      summary +=
-        best.rain.level === 'dry'
-          ? '\n☂️ You should stay dry — no umbrella needed.'
-          : '\n☔ Take an umbrella — expect rain along the way.';
-    }
+        ? `I compared ${result.routes.length} routes — the **recommended** one is ${best.distanceKm.toFixed(1)} km (~${Math.round(best.durationMin)} min) and ${WORD[lvl]}.`
+        : `It's ${best.distanceKm.toFixed(1)} km (~${Math.round(best.durationMin)} min) and ${WORD[lvl]}.`;
+    if (nav.asksRain || lvl !== 'dry') summary += ADVICE[lvl];
 
     sayAssistant(summary, {
       kind: 'route',

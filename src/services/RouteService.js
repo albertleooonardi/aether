@@ -57,6 +57,18 @@ const samplePoints = (coords, count = 3) => {
   return pts;
 };
 
+// WeatherAPI condition codes below 1150 are dry states (clear, cloud, haze, fog)
+// plus the "nearby" forecasts — 1063 "Patchy rain nearby", 1087 "Thundery
+// outbreaks in nearby" — which report rain *around* the point, not on it. Codes
+// 1150+ are precipitation actually falling, with no exceptions in WeatherAPI's
+// published list.
+//
+// The old check was condition.text.includes('rain'), which was wrong both ways:
+// it counted "Patchy rain nearby" (the default daytime condition across much of
+// the tropics, so every route scored wet) and missed drizzle and sleet, whose
+// labels never contain the word "rain".
+const isPrecipitating = (code) => code >= 1150;
+
 export const assessRain = async (route) => {
   const points = samplePoints(route.coordinates, 3);
   let precip = 0;
@@ -66,15 +78,19 @@ export const assessRain = async (route) => {
   await Promise.all(
     points.map(async ([lat, lon]) => {
       try {
-        const d = await fetchCurrent(`${lat},${lon}`);
-        precip += d.current.precip_mm || 0;
-        if ((d.current.condition.text || '').toLowerCase().includes('rain')) rainy += 1;
+        const { current } = await fetchCurrent(`${lat},${lon}`);
+        precip += current.precip_mm || 0;
+        if (isPrecipitating(current.condition?.code)) rainy += 1;
         samples += 1;
       } catch {
         /* skip failed sample */
       }
     })
   );
+
+  // No sample survived (WeatherAPI down or out of quota) — say so rather than
+  // scoring 0 and promising a dry trip we never checked.
+  if (!samples) return { precip: 0, rainy: 0, samples: 0, score: Infinity, level: 'unknown' };
 
   const score = precip + rainy;
   const level = score <= 0.2 ? 'dry' : score < 2 ? 'light' : 'wet';

@@ -3,24 +3,30 @@
 
 const isHere = (s) => /^(my (place|location|home|area|position)|here|me|current location)$/i.test(s.trim());
 
-// "route from X to Y", "directions to Y", "from my place to Grand Indonesia will it rain"
+// People write "into"/"towards" as often as "to" ("analyze my route from my place
+// into Maspion Plaza"), and \bto\b never matches inside "into" — so those phrasings
+// used to miss the parser entirely and fall through to a generic reply.
+// Longest alternative first so "to" can't shadow "towards".
+const TO = '(?:into|towards|toward|to)';
+
+// "route from X to Y", "directions to Y", "analyze my route from my place into Y"
 export const parseNavigation = (text) => {
   const t = text.toLowerCase();
   const hasNav =
-    (/\bfrom\b/.test(t) && /\bto\b/.test(t)) ||
-    /\b(route|directions?|navigate|way)\b.*\bto\b/.test(t) ||
+    (/\bfrom\b/.test(t) && new RegExp(`\\b${TO}\\b`).test(t)) ||
+    new RegExp(`\\b(route|directions?|navigate|drive|driving|commute|way)\\b.*\\b${TO}\\b`).test(t) ||
     t.includes('best route');
   if (!hasNav) return null;
 
   let originText = null;
   let destText = null;
 
-  let m = text.match(/from\s+(.+?)\s+to\s+(.+?)(?:[?.,;]|$)/i);
+  let m = text.match(new RegExp(`from\\s+(.+?)\\s+${TO}\\s+(.+?)(?:[?.,;]|$)`, 'i'));
   if (m) {
     originText = m[1].trim();
     destText = m[2].trim();
   } else {
-    m = text.match(/(?:route|directions?|navigate|way|go|get)\s+to\s+(.+?)(?:[?.,;]|$)/i);
+    m = text.match(new RegExp(`(?:route|directions?|navigate|way|go|get|drive)\\s+${TO}\\s+(.+?)(?:[?.,;]|$)`, 'i'));
     if (m) destText = m[1].trim();
   }
   if (!destText) return null;

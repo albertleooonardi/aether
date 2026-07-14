@@ -55,16 +55,17 @@ flowchart LR
 
     API --> GEM["Gemini (primary)"]
     API -.->|on quota| GROQ["Groq (backup)"]
-    API --> NOM["Nominatim geocoding"]
+    API --> PHO["Photon geocoding"]
+    API -.->|fallback| NOM["Nominatim geocoding"]
     API --> OSRM["OSRM routing"]
 
-    UI -.->|"fallback if :3001 is down"| NOM
+    UI -.->|"fallback if :3001 is down"| PHO
     UI -.->|"fallback if :3001 is down"| OSRM
 ```
 
-**Why a backend at all?** Three reasons: it keeps AI keys off the client, it sends Nominatim the polite `User-Agent` its usage policy requires, and it can retry upstream calls server-side without tripping browser rate limits.
+**Why a backend at all?** Three reasons: it keeps AI keys off the client, it sends the geocoders the polite `User-Agent` their usage policies require, and it can retry upstream calls server-side without tripping browser rate limits.
 
-**Everything degrades instead of breaking.** The backend is optional — if `:3001` is down, the frontend calls Nominatim and OSRM directly. If the AI has no keys or is rate-limited, chat falls back to a local deterministic assistant that still answers from loaded weather data. Geocoding tries three tiers (proxy → Nominatim → WeatherAPI search) before giving up.
+**Everything degrades instead of breaking.** The backend is optional — if `:3001` is down, the frontend calls the geocoder and OSRM directly. If the AI has no keys or is rate-limited, chat falls back to a local deterministic assistant that still answers from loaded weather data. Geocoding tries four tiers (proxy → Photon → Nominatim → WeatherAPI search) before giving up.
 
 ### The interesting bits
 
@@ -74,7 +75,7 @@ flowchart LR
 For each alternative, [`RouteService.js`](src/services/RouteService.js) samples 3 points evenly along the path and fetches current conditions at each:
 
 ```
-score = total precipitation (mm) + number of sampled points reporting "rain"
+score = total precipitation (mm) + number of points where precipitation is falling
 
 score ≤ 0.2  → dry    (green)
 score < 2    → light  (yellow)
@@ -82,6 +83,10 @@ otherwise    → wet    (red)
 ```
 
 The lowest score wins and gets highlighted on the map. It's a deliberately cheap heuristic — 3 samples per route keeps the app inside WeatherAPI's free tier rather than chasing meteorological precision.
+
+"Precipitation is falling" is decided by WeatherAPI's condition **code** (`≥ 1150`), never by matching the word "rain" in the label. Code 1063 is *"Patchy rain nearby"* — rain **around** the point, not on it — and it's the default daytime condition across much of the tropics. Counting it marked every route wet. Matching text also misses drizzle and sleet, whose labels never say "rain".
+
+If every sample fails, the route reports `unknown` rather than scoring 0 and promising a dry trip nobody checked.
 </details>
 
 <details>
@@ -211,7 +216,7 @@ src/
 │   └── …                   # Weather cards, forecasts, UV, wind, animations
 ├── services/
 │   ├── AetherAI.js         # Backend chat client
-│   ├── GeoService.js       # Geocoding (3-tier fallback)
+│   ├── GeoService.js       # Geocoding (Photon → Nominatim → WeatherAPI)
 │   ├── RouteService.js     # Routing + rain assessment
 │   ├── WeatherService.js   # WeatherAPI client
 │   └── StorageService.js   # localStorage persistence
@@ -226,7 +231,8 @@ server/
 ## ⚠️ Known limitations
 
 - **OSRM public demo server** — free and unmetered, but rate-limited and offers no uptime guarantee. Self-host OSRM for anything serious.
-- **Nominatim POI coverage is patchy.** Searches are biased toward your location and ranked by OSM's `importance` score, which handles cities well. Obscure POIs may still resolve to a near-miss; adding the city name helps.
+- **POI coverage is only as good as OSM.** Photon handles named landmarks well and searches are biased toward your location, but a place missing from OpenStreetMap can't be found by either geocoder. Adding the city name helps.
+- **Radar tops out at zoom 7.** RainViewer's free tiles don't exist above z7, so on a city-scale route the overlay is an upscaled — and visibly coarse — approximation. That's the real resolution of the data, not a rendering bug.
 - **Rain sampling is a heuristic** — 3 points per route against *current* conditions, not forecast-along-arrival-time. Good for "should I take an umbrella", not for meteorology.
 - **API keys are build-time.** `REACT_APP_*` values are embedded in the bundle, so a deployed frontend's WeatherAPI key is public. Restrict it at the provider, or proxy it through the backend.
 
@@ -238,4 +244,4 @@ MIT.
 
 ## 🙏 Acknowledgements
 
-[WeatherAPI](https://www.weatherapi.com/) · [OpenStreetMap Nominatim](https://nominatim.org/) · [OSRM](https://project-osrm.org/) · [RainViewer](https://www.rainviewer.com/) · [Leaflet](https://leafletjs.com/) · [Lucide](https://lucide.dev/)
+[WeatherAPI](https://www.weatherapi.com/) · [Photon](https://photon.komoot.io/) · [OpenStreetMap Nominatim](https://nominatim.org/) · [OSRM](https://project-osrm.org/) · [RainViewer](https://www.rainviewer.com/) · [Leaflet](https://leafletjs.com/) · [Lucide](https://lucide.dev/)

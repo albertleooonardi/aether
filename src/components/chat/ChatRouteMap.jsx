@@ -5,7 +5,12 @@ const LEVEL = {
   dry: { color: '#22c55e', label: 'Dry' },
   light: { color: '#eab308', label: 'Light rain' },
   wet: { color: '#ef4444', label: 'Rain' },
+  unknown: { color: '#94a3b8', label: 'No data' },
 };
+
+// RainViewer's free radar tiles only exist up to z7; above that it serves a
+// "Zoom Level Not Supported" placeholder image instead of a transparent tile.
+const RADAR_MAX_NATIVE_ZOOM = 7;
 
 const RAINVIEWER_INDEX = 'https://api.rainviewer.com/public/weather-maps.json';
 
@@ -75,7 +80,16 @@ const ChatRouteMap = ({ data }) => {
         const past = idx.radar?.past || [];
         if (past.length) {
           const p = past[past.length - 1];
-          L.tileLayer(`${idx.host}${p.path}/256/{z}/{x}/{y}/4/1_1.png`, { opacity: 0.5, zIndex: 400 }).addTo(map);
+          // maxNativeZoom stops Leaflet requesting tiles past RainViewer's z7
+          // ceiling — it upscales the z7 tile instead of tiling the map with
+          // "Zoom Level Not Supported" placeholders. Radar is coarse by nature,
+          // so an upscaled tile is the real resolution, not a downgrade.
+          L.tileLayer(`${idx.host}${p.path}/256/{z}/{x}/{y}/4/1_1.png`, {
+            opacity: 0.45,
+            zIndex: 400,
+            maxNativeZoom: RADAR_MAX_NATIVE_ZOOM,
+            maxZoom: 19,
+          }).addTo(map);
         }
       } catch {
         /* ignore */
@@ -129,9 +143,11 @@ const ChatRouteMap = ({ data }) => {
           );
         })}
         <p className="pt-1 text-[11px] text-white/45">
-          {best.rain.level === 'dry'
-            ? 'All sampled points look dry along the recommended route.'
-            : `Rain sampled at ${best.rain.rainy}/${best.rain.samples} points on the driest route.`}
+          {best.rain.level === 'unknown'
+            ? 'Could not reach the weather service to check this route.'
+            : best.rain.level === 'dry'
+            ? `No rain at any of the ${best.rain.samples} sampled points on the recommended route.`
+            : `Rain falling at ${best.rain.rainy}/${best.rain.samples} sampled points on the driest route.`}
         </p>
       </div>
     </div>
