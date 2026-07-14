@@ -1,9 +1,7 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Loader2 } from 'lucide-react';
+import Logo from './components/Logo';
 import SearchBar from './components/SearchBar';
-import RoutesSection from './components/RoutesSection';
-import { loadRoutes, createRoute, deleteRoute, normalizeActivity, cap } from './routes/routeStore';
-import { buildTimeline, summarize } from './routes/timeline';
 import WeatherCard from './components/WeatherCard';
 import HourlyForecast from './components/HourlyForecast';
 import ForecastCard from './components/ForecastCard';
@@ -15,7 +13,6 @@ import EmptyState from './components/EmptyState';
 import ChatWidget from './components/chat/ChatWidget';
 import { fetchWeatherByCoords, fetchWeatherByCity } from './services/WeatherService';
 import { saveLastCity, loadLastCity } from './services/StorageService';
-import { getTheme } from './utils/ThemeUtils';
 import './App.css';
 
 const App = () => {
@@ -26,9 +23,6 @@ const App = () => {
   const [loading, setLoading] = useState(false);
   const [locating, setLocating] = useState(false);
   const [error, setError] = useState('');
-  const [routes, setRoutes] = useState(loadRoutes);
-  const [routeForecast, setRouteForecast] = useState(null);
-  const forecastDaysRef = useRef([]);
 
   const handleLoadLastCity = useCallback(async () => {
     const lastCity = await loadLastCity();
@@ -93,7 +87,6 @@ const App = () => {
   const processWeatherData = async (data) => {
     const today = data.forecast?.forecastday?.[0];
     const now = data.location.localtime_epoch;
-    forecastDaysRef.current = data.forecast?.forecastday || [];
 
     setWeather({
       temp: Math.round(data.current.temp_c),
@@ -173,73 +166,17 @@ const App = () => {
     handleFetchByCity(city);
   };
 
-  const handleDeleteRoute = (id) => {
-    setRoutes(deleteRoute(id));
-    setRouteForecast((rf) => (rf && routes.find((r) => r.id === id && r.name === rf.routeName) ? null : rf));
-  };
-
-  // Interprets route-related chat messages (save / list / forecast). Returns a
-  // reply string if it handled the message, otherwise null. Reuses the already
-  // loaded forecast — no extra API calls.
-  const handleRouteCommand = (text) => {
-    const t = text.toLowerCase();
-    const activityMatch = t.match(/\b(run|running|walk|walking|bike|biking|cycling|cycle)\b/);
-    const mentionsRoute = t.includes('route');
-    const wantsSave = t.includes('save') && (mentionsRoute || activityMatch);
-    const wantsList = mentionsRoute && (t.includes('list') || t.includes('show') || t.includes('my routes'));
-    const wantsForecast =
-      (mentionsRoute && (t.includes('forecast') || t.includes('weather') || t.includes('when'))) ||
-      (t.startsWith('forecast') && !mentionsRoute && loadRoutes().length > 0);
-
-    if (!wantsSave && !wantsList && !wantsForecast) return null;
-    if (!weather) return 'Search a location first so I can anchor your routes there.';
-
-    if (wantsSave) {
-      const activity = activityMatch ? normalizeActivity(activityMatch[1]) : 'run';
-      const nameMatch = text.match(/(?:called|named)\s+(.+)$/i);
-      const name = nameMatch ? nameMatch[1].trim() : `${cap(activity)} near ${weather.city}`;
-      const route = createRoute([weather.lat, weather.lon], activity, name);
-      setRoutes(loadRoutes());
-      return `Saved “${route.name}” — a ${route.distanceKm.toFixed(1)} km loop. Say “forecast my ${activity}” to see the weather along it.`;
-    }
-
-    const saved = loadRoutes();
-    if (wantsList) {
-      if (!saved.length) return 'No saved routes yet. Say “save a run route here” to create one.';
-      return 'Your routes:\n' + saved.map((r) => `• ${r.name} — ${r.distanceKm.toFixed(1)} km, ${r.avgPaceMinPerKm} min/km`).join('\n');
-    }
-
-    // Forecast
-    if (!saved.length) return 'You have no saved routes yet — say “save a run route here” first.';
-    const named = saved.find((r) => t.includes(r.name.toLowerCase().split(' ')[0])) ||
-      (activityMatch && saved.find((r) => r.activityType === normalizeActivity(activityMatch[1])));
-    const route = named || saved[saved.length - 1];
-    if (!forecastDaysRef.current.length) return "I don't have the hourly forecast loaded yet — try again in a moment.";
-    const timeline = buildTimeline(route, weather.timestamp, forecastDaysRef.current);
-    const summary = summarize(timeline, route);
-    setRouteForecast({ routeName: route.name, timeline, summary });
-    return `${route.name} — ${summary}`;
-  };
-
-  const theme = getTheme(weather);
-
   return (
-    <div
-      className={`relative min-h-screen overflow-hidden bg-gradient-to-br ${theme.gradient} transition-[background] duration-1000 ease-out`}
-    >
-      {/* Ambient accent glow that tints the whole scene */}
-      <div
-        className="pointer-events-none fixed -top-40 left-1/2 h-[520px] w-[520px] -translate-x-1/2 rounded-full blur-3xl transition-colors duration-1000"
-        style={{ background: theme.glow }}
-      />
-      <div
-        className="pointer-events-none fixed bottom-[-160px] right-[-120px] h-[420px] w-[420px] rounded-full blur-3xl transition-colors duration-1000"
-        style={{ background: theme.glow }}
-      />
-
+    <div className="relative min-h-screen overflow-hidden" style={{ background: '#181C21' }}>
       <WeatherAnimations weather={weather} />
 
       <div className="relative z-10 mx-auto w-full max-w-[1800px] px-4 py-5 md:px-8 md:py-6 lg:px-12">
+        {/* Brand */}
+        <header className="mb-5 flex items-center gap-3">
+          <Logo size={40} />
+          <span className="text-xl font-semibold tracking-[0.22em] text-white">AETHER</span>
+        </header>
+
         {error && <ErrorMessage message={error} />}
 
         <div className="grid animate-fade-in-up gap-4 lg:grid-cols-5">
@@ -283,15 +220,9 @@ const App = () => {
             </div>
           )}
         </div>
-
-        {weather && !loading && (
-          <div className="mt-4 animate-fade-in-up">
-            <RoutesSection routes={routes} routeForecast={routeForecast} onDelete={handleDeleteRoute} />
-          </div>
-        )}
       </div>
 
-      <ChatWidget weather={weather} onRouteCommand={handleRouteCommand} />
+      <ChatWidget weather={weather} />
     </div>
   );
 };

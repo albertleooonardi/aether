@@ -1,36 +1,29 @@
-const API_KEY = 'd5f1cded8f934b728a581408251711';
-const BASE_URL = 'https://api.weatherapi.com/v1';
+import { WEATHER_API_KEY, WEATHER_BASE_URL } from './config';
 
 export const fetchWeatherByCoords = async (lat, lon) => {
-  const url = `${BASE_URL}/forecast.json?key=${API_KEY}&q=${lat},${lon}&days=4&aqi=yes`;
-  console.log('Fetching weather by coords:', url);
-  
+  const url = `${WEATHER_BASE_URL}/forecast.json?key=${WEATHER_API_KEY}&q=${lat},${lon}&days=4&aqi=yes`;
   const response = await fetch(url);
-
   if (!response.ok) {
-    const errorData = await response.json();
-    console.error('API Error:', errorData);
     throw new Error('Unable to fetch weather');
   }
-
-  const data = await response.json();
-  console.log('Weather data received:', data);
-  return data;
+  return response.json();
 };
 
 export const fetchWeatherByCity = async (cityName) => {
-  const url = `${BASE_URL}/forecast.json?key=${API_KEY}&q=${cityName}&days=4&aqi=yes`;
-  console.log('Fetching weather by city:', url);
-  
+  const url = `${WEATHER_BASE_URL}/forecast.json?key=${WEATHER_API_KEY}&q=${encodeURIComponent(cityName)}&days=4&aqi=yes`;
   const response = await fetch(url);
-
   if (!response.ok) {
-    const errorData = await response.json();
-    console.error('API Error:', errorData);
     throw new Error('City not found');
   }
+  return response.json();
+};
 
-  const data = await response.json();
-  console.log('Weather data received:', data);
-  return data;
+// Lightweight current-conditions lookup (used to sample rain along a route).
+export const fetchCurrent = async (q) => {
+  const url = `${WEATHER_BASE_URL}/current.json?key=${WEATHER_API_KEY}&q=${encodeURIComponent(q)}`;
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error('Unable to fetch current conditions');
+  }
+  return response.json();
 };

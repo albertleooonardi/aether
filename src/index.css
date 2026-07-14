@@ -1,11 +1,14 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,100..900;1,100..900&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* Zircon @font-face lives in public/fonts.css (static, so missing files fall
- * back to Inter without breaking the build). See public/fonts/README.md. */
+/*
+ * Aether palette (flat, no gradients):
+ *   Black 030303 · Eerie Black 181C21 · Squid Ink 2E343E · Marengo 434D5C
+ *   Payne's Gray 58667A · Slate Gray 6F7F96 · Cadet Gray 8C99AC
+ */
 
 * {
   -webkit-font-smoothing: antialiased;
@@ -16,28 +19,23 @@ html,
 body {
   margin: 0;
   padding: 0;
-  font-family: 'Zircon', 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: 'Montserrat', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  background: #181c21;
   color: #fff;
 }
 
 @layer utilities {
-  /* Frosted glass surface */
+  /* Card surface — Squid Ink with a Marengo/Slate hairline border */
   .glass {
-    background: rgba(255, 255, 255, 0.08);
-    backdrop-filter: blur(22px) saturate(160%);
-    -webkit-backdrop-filter: blur(22px) saturate(160%);
-    border: 1px solid rgba(255, 255, 255, 0.14);
-    box-shadow:
-      0 10px 40px rgba(0, 0, 0, 0.22),
-      inset 0 1px 0 rgba(255, 255, 255, 0.16);
+    background: #2e343e;
+    border: 1px solid rgba(111, 127, 150, 0.22);
+    box-shadow: 0 10px 40px rgba(3, 3, 3, 0.35);
   }
 
-  /* Lighter inner glass used for nested tiles */
+  /* Nested / inner surface */
   .glass-soft {
-    background: rgba(255, 255, 255, 0.06);
-    backdrop-filter: blur(12px) saturate(140%);
-    -webkit-backdrop-filter: blur(12px) saturate(140%);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(67, 77, 92, 0.35);
+    border: 1px solid rgba(111, 127, 150, 0.16);
   }
 
   .glass-hover {
@@ -50,9 +48,9 @@ body {
 
   .glass-hover:hover {
     transform: translateY(-5px);
-    background: rgba(255, 255, 255, 0.13);
-    border-color: rgba(255, 255, 255, 0.28);
-    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
+    background: rgba(88, 102, 122, 0.35);
+    border-color: rgba(140, 153, 172, 0.4);
+    box-shadow: 0 18px 50px rgba(3, 3, 3, 0.4);
   }
 
   .text-glow {
@@ -71,4 +69,41 @@ body {
     -ms-overflow-style: none;
     scrollbar-width: none;
   }
+}
+
+/* ---- Leaflet map (dark theme) ---- */
+.leaflet-container {
+  background: #0a0a0a;
+  font-family: inherit;
+}
+.leaflet-bar a {
+  background: #171717;
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.1);
+}
+.leaflet-bar a:hover {
+  background: #262626;
+}
+.leaflet-control-attribution {
+  background: rgba(0, 0, 0, 0.5) !important;
+  color: rgba(255, 255, 255, 0.45) !important;
+}
+.leaflet-control-attribution a {
+  color: rgba(255, 255, 255, 0.7) !important;
+}
+
+/* Pulsing "you are here" dot */
+.rc-pulse {
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  background: #8c99ac;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 0 rgba(140, 153, 172, 0.5);
+  animation: rcpulse 2s infinite;
+}
+@keyframes rcpulse {
+  0% { box-shadow: 0 0 0 0 rgba(140, 153, 172, 0.5); }
+  70% { box-shadow: 0 0 0 16px rgba(140, 153, 172, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(140, 153, 172, 0); }
 }
