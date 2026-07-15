@@ -1,14 +1,15 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { MessageCircle, X, Send, Bell, Sparkles, Activity } from 'lucide-react';
 import { parseReminder, answer, formatClock } from '../../chat/assistant';
-import { parseNavigation, parseWeatherIn } from '../../chat/intents';
+import { parseNavigation, parseWeatherIn, parseMapsUrl } from '../../chat/intents';
 import { fetchWeatherByCity } from '../../services/WeatherService';
-import { geocode } from '../../services/GeoService';
+import { geocode, geocodeCandidates, resolveMapsUrl } from '../../services/GeoService';
 import { getRoutesWithRain } from '../../services/RouteService';
 import { askAI, checkAI, getUsage } from '../../services/AetherAI';
 import RichText from './RichText';
 import WeatherReplyCard from './WeatherReplyCard';
 import ChatRouteMap from './ChatRouteMap';
+import PlacePicker from './PlacePicker';
 import UsagePanel from './UsagePanel';
 
 const STORAGE_KEY = 'vrijeme.reminders.v1';
@@ -79,6 +80,9 @@ const ChatWidget = ({ weather }) => {
   weatherRef.current = weather;
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
+  // A route waiting on the user to say where they actually meant — either by
+  // picking from the list or pasting a Google Maps link.
+  const pending = useRef(null);
 
   // Is the Gemini-backed AetherAI backend reachable?
   useEffect(() => {
@@ -177,15 +181,44 @@ const ChatWidget = ({ weather }) => {
           : 'Search a city in the app first so I can use it as your starting point.'
       );
     }
-    // Bias the destination search around the origin — you drive from there.
-    const destLoc = await geocode(nav.destText, originLoc);
-    if (!destLoc) {
-      return sayAssistant(`I couldn't find “${nav.destText}”. Try a more specific name (add the city).`);
+
+    // A pasted Google Maps link is already an exact spot — no guessing needed.
+    if (nav.isUrl) {
+      const pin = await resolveMapsUrl(nav.destText);
+      if (!pin) {
+        return sayAssistant(
+          "I couldn't read a location out of that link. Open it in Google Maps, then copy the URL from the address bar — the one with coordinates in it."
+        );
+      }
+      return await runRoute(nav, originLoc, pin);
     }
 
+    // Bias the destination search around the origin — you drive from there.
+    const candidates = await geocodeCandidates(nav.destText, originLoc);
+    if (!candidates.length) {
+      pending.current = { nav, originLoc };
+      return sayAssistant(
+        `I couldn't find “${nav.destText}”. Try adding the city — or paste a Google Maps link and I'll use that exact spot.`
+      );
+    }
+    // One clear hit: just go. Several: ask, rather than betting on the top one.
+    if (candidates.length === 1) return await runRoute(nav, originLoc, candidates[0]);
+
+    pending.current = { nav, originLoc };
+    // The question carries its own context: picking from an older picker must
+    // route that request, not whichever one was asked most recently.
+    return sayAssistant(`I found a few places called “${nav.destText}” — which one did you mean?`, {
+      kind: 'choice',
+      data: { query: nav.destText, candidates, origin: originLoc, chosen: null, nav },
+    });
+  };
+
+  // Resolve a picked/pasted destination into an actual routed answer.
+  const runRoute = async (nav, originLoc, destLoc) => {
+    const departAt = nav.departAt || Date.now();
     let result;
     try {
-      result = await getRoutesWithRain(originLoc, destLoc);
+      result = await getRoutesWithRain(originLoc, destLoc, departAt);
     } catch (err) {
       return sayAssistant(
         err.code === 'no_route'
@@ -196,29 +229,49 @@ const ChatWidget = ({ weather }) => {
 
     const best = result.routes[result.bestIndex];
     const WORD = {
-      dry: 'looks dry the whole way',
+      dry: 'stays dry the whole way',
       light: 'catches a little light rain',
       wet: 'runs into rain',
       unknown: "couldn't be checked for rain",
     };
     const ADVICE = {
       dry: '\n☂️ You should stay dry — no umbrella needed.',
-      light: '\n🌂 Maybe pack an umbrella — only light rain on the way.',
-      wet: '\n☔ Take an umbrella — expect rain along the way.',
+      light: '\n🌂 Maybe pack an umbrella — only light rain forecast on the way.',
+      wet: '\n☔ Take an umbrella — rain is forecast while you’d be driving.',
       unknown: '\n🤷 I couldn’t reach the weather service for this route, so I can’t call it either way.',
     };
     const lvl = best.rain.level;
+    const leaving = nav.departAt ? `leaving ${formatClock(departAt)}` : 'leaving now';
+
     let summary = `Here's the route from **${originLoc.name}** to **${destLoc.name}**.\n`;
     summary +=
       result.routes.length > 1
         ? `I compared ${result.routes.length} routes — the **recommended** one is ${best.distanceKm.toFixed(1)} km (~${Math.round(best.durationMin)} min) and ${WORD[lvl]}.`
         : `It's ${best.distanceKm.toFixed(1)} km (~${Math.round(best.durationMin)} min) and ${WORD[lvl]}.`;
+    // Say what was actually checked — the claim is about the drive, not about now.
+    if (lvl !== 'unknown') {
+      summary += `\nChecked the forecast along the way for ${leaving}, arriving ~${formatClock(best.arriveAt)}.`;
+    }
     if (nav.asksRain || lvl !== 'dry') summary += ADVICE[lvl];
 
     sayAssistant(summary, {
       kind: 'route',
       data: { origin: originLoc, dest: destLoc, routes: result.routes, bestIndex: result.bestIndex },
     });
+  };
+
+  // User tapped one of the candidates. Lock the list to the choice so the picker
+  // reads as a settled answer, then route to it.
+  const handlePick = async (msg, choice) => {
+    if (busy) return;
+    setMessages((prev) => prev.map((m) => (m.id === msg.id ? { ...m, data: { ...m.data, chosen: choice } } : m)));
+    pending.current = null; // this question is answered
+    setBusy(true);
+    try {
+      await runRoute(msg.data.nav, msg.data.origin, choice);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const handleSubmit = async (e) => {
@@ -247,6 +300,21 @@ const ChatWidget = ({ weather }) => {
 
     setBusy(true);
     try {
+      // A bare Google Maps link answers a route we already asked about — no need
+      // to repeat "route to …" around it.
+      const url = parseMapsUrl(text);
+      if (url && pending.current) {
+        const p = pending.current;
+        pending.current = null;
+        const pin = await resolveMapsUrl(url);
+        if (!pin) {
+          return sayAssistant(
+            "I couldn't read a location out of that link. Open it in Google Maps, then copy the URL from the address bar — the one with coordinates in it."
+          );
+        }
+        return await runRoute(p.nav, p.originLoc, pin);
+      }
+
       // Rich, action-backed intents render cards/maps.
       const nav = parseNavigation(text);
       if (nav) return await handleNavigation(nav);
@@ -299,7 +367,20 @@ const ChatWidget = ({ weather }) => {
               <Sparkles size={17} className="text-[#8C99AC]" />
             </span>
             <div className="flex-1">
-              <div className="text-sm font-semibold text-white">AetherAI</div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-sm font-semibold text-white">AetherAI</span>
+                {/* Without a provider key the LLM never runs and every reply comes
+                    from the small rule-based assistant. Say so, rather than just
+                    seeming dim. */}
+                {!aiReady && (
+                  <span
+                    title="No AI provider key is configured, so I'm answering with simple built-in rules. Add GEMINI_API_KEY or GROQ_API_KEY to .env and restart the server."
+                    className="rounded-full bg-amber-400/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-300/90"
+                  >
+                    basic mode
+                  </span>
+                )}
+              </div>
               <div className="text-[11px] text-white/50">
                 {weather ? `${weather.city} · ${weather.temp}°` : 'Ask me anything about the weather'}
               </div>
@@ -346,6 +427,7 @@ const ChatWidget = ({ weather }) => {
                     <RichText text={m.text} />
                     {m.kind === 'weather' && <WeatherReplyCard data={m.data} />}
                     {m.kind === 'route' && <ChatRouteMap data={m.data} />}
+                    {m.kind === 'choice' && <PlacePicker data={m.data} onPick={(c) => handlePick(m, c)} />}
                   </div>
                 </div>
               )

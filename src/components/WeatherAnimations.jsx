@@ -1,10 +1,8 @@
 import React from 'react';
-import { getTimeOfDay } from '../utils/TimeUtils';
 
 const WeatherAnimations = ({ weather }) => {
   if (!weather) return null;
 
-  const timeOfDay = getTimeOfDay(weather);
   const isNight = weather.isDay === 0;
   const text = weather.icon.toLowerCase();
   
@@ -123,18 +121,6 @@ const WeatherAnimations = ({ weather }) => {
     </div>
   );
 
-  const SunriseAnimation = () => (
-    <div className="fixed bottom-0 left-1/2 h-[28rem] w-[28rem] -translate-x-1/2 pointer-events-none z-0">
-      <div className="absolute inset-0 rounded-full bg-gradient-radial from-amber-200/25 via-orange-200/10 to-transparent animate-pulse-slow" />
-    </div>
-  );
-
-  const SunAnimation = () => (
-    <div className="fixed -top-24 right-4 h-72 w-72 pointer-events-none z-0 md:right-16">
-      <div className="absolute inset-0 rounded-full bg-gradient-radial from-amber-100/25 via-amber-200/10 to-transparent animate-pulse-slow" />
-    </div>
-  );
-
   const StarsAnimation = () => (
     <div className="fixed inset-0 pointer-events-none overflow-hidden z-0">
       {[...Array(100)].map((_, i) => {
@@ -174,15 +160,10 @@ const WeatherAnimations = ({ weather }) => {
     return <CloudAnimation />;
   }
   
-  // Time-based ambience for clear weather
-  if (timeOfDay === 'sunrise' || timeOfDay === 'sunset') {
-    return <SunriseAnimation />;
-  }
+  // Time-based ambience. Clear daytime and sunrise/sunset render nothing — the
+  // amber sun glow was removed by request.
   if (isNight) {
     return <StarsAnimation />;
-  }
-  if (text.includes('sunny') || text.includes('clear')) {
-    return <SunAnimation />;
   }
 
   return null;

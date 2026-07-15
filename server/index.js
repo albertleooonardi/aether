@@ -249,44 +249,129 @@ const VIEW_DEG = 3;
 const viewboxOf = (c) =>
   c ? `&viewbox=${c.lon - VIEW_DEG},${c.lat - VIEW_DEG},${c.lon + VIEW_DEG},${c.lat + VIEW_DEG}` : '';
 
-const mostImportant = (arr) =>
-  arr.reduce((a, b) => ((b.importance || 0) > (a.importance || 0) ? b : a));
+const distanceKm = (a, b) => {
+  const R = 6371;
+  const rad = Math.PI / 180;
+  const dLat = (b.lat - a.lat) * rad;
+  const dLon = (b.lon - a.lon) * rad;
+  const h =
+    Math.sin(dLat / 2) ** 2 + Math.sin(dLon / 2) ** 2 * Math.cos(a.lat * rad) * Math.cos(b.lat * rad);
+  return 2 * R * Math.asin(Math.sqrt(h));
+};
+
+// Two providers can return the same place, and one provider returns a POI plus its
+// own sub-features — "Central Park" comes back as the mall, its musical fountain,
+// its parking basement and its loading dock, spread over ~250m. Offering those as
+// separate destinations is noise, not a decision: for driving directions they are
+// the same arrival, on the same roads, in the same weather. Cluster by real
+// distance (rounding coordinates would split pairs across a boundary) and keep the
+// highest-ranked of each cluster.
+const NEAR_DUPLICATE_KM = 0.4;
+
+const dedupe = (list) =>
+  list.reduce((keep, c) => {
+    if (!keep.some((k) => distanceKm(k, c) < NEAR_DUPLICATE_KM)) keep.push(c);
+    return keep;
+  }, []);
 
 async function viaPhoton(q, c) {
   const bias = c ? `&lat=${c.lat}&lon=${c.lon}` : '';
-  const { status, data } = await fetchJSON(`${PHOTON}?q=${encodeURIComponent(q)}&limit=5&lang=en${bias}`, {
+  const { status, data } = await fetchJSON(`${PHOTON}?q=${encodeURIComponent(q)}&limit=6&lang=en${bias}`, {
     'User-Agent': 'AetherAI/1.0 (Aether weather app)',
   });
-  const f = status === 200 && data && data.features && data.features[0];
-  if (!f) return null;
-  const p = f.properties || {};
-  const [lon, lat] = f.geometry.coordinates;
-  const name = p.name || p.street || p.city;
-  if (!name || !Number.isFinite(lat)) return null;
-  return { name, label: [name, p.city || p.state, p.country].filter(Boolean).join(', '), lat, lon };
+  if (status !== 200 || !data || !Array.isArray(data.features)) return [];
+  return data.features
+    .map((f) => {
+      const p = f.properties || {};
+      const [lon, lat] = f.geometry.coordinates;
+      const name = p.name || p.street || p.city;
+      if (!name || !Number.isFinite(lat)) return null;
+      return { name, label: [name, p.city || p.state, p.country].filter(Boolean).join(', '), lat, lon };
+    })
+    .filter(Boolean);
 }
 
 async function viaNominatim(q, c) {
   const { status, data } = await fetchJSON(
-    `${NOMINATIM}?q=${encodeURIComponent(q)}&format=json&limit=5${viewboxOf(c)}`,
+    `${NOMINATIM}?q=${encodeURIComponent(q)}&format=json&limit=6${viewboxOf(c)}`,
     { 'User-Agent': 'AetherAI/1.0 (Aether weather app)', Accept: 'application/json' }
   );
-  if (status !== 200 || !Array.isArray(data) || !data.length) return null;
-  const l = mostImportant(data);
-  const label = l.display_name.split(',').slice(0, 2).join(',').trim();
-  return { name: l.name || label, label, lat: parseFloat(l.lat), lon: parseFloat(l.lon) };
+  if (status !== 200 || !Array.isArray(data) || !data.length) return [];
+  // Most significant first, or a minor hamlet outranks the city of the same name.
+  return [...data]
+    .sort((a, b) => (b.importance || 0) - (a.importance || 0))
+    .map((l) => {
+      const label = l.display_name.split(',').slice(0, 2).join(',').trim();
+      return { name: l.name || label, label, lat: parseFloat(l.lat), lon: parseFloat(l.lon) };
+    });
 }
 
+// Returns a ranked candidate list so the client can ask the user which one they
+// meant rather than betting on the top hit.
 async function handleGeocode(q, near, res) {
   if (!q) return json(res, 400, { error: 'missing_q' });
   const c = coords(near);
   for (const lookup of [viaPhoton, viaNominatim]) {
     try {
-      const hit = await lookup(q, c);
-      if (hit) return json(res, 200, hit);
+      const list = dedupe(await lookup(q, c)).slice(0, 4);
+      if (list.length) return json(res, 200, { candidates: list });
     } catch {
       /* try the next provider */
     }
+  }
+  return json(res, 404, { error: 'not_found' });
+}
+
+/* ---------------- Google Maps short links ---------------- */
+
+const COORD_PATTERNS = [
+  /@(-?\d+\.\d+),(-?\d+\.\d+)/,
+  /[?&](?:q|ll|sll|daddr|destination)=(-?\d+\.\d+),\s*(-?\d+\.\d+)/,
+  /!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/,
+];
+
+const placeNameOf = (url) => {
+  const m = url.match(/\/maps\/place\/([^/@]+)/);
+  if (!m) return null;
+  try {
+    return decodeURIComponent(m[1].replace(/\+/g, ' ')).trim() || null;
+  } catch {
+    return null;
+  }
+};
+
+const coordsIn = (url) => {
+  for (const re of COORD_PATTERNS) {
+    const m = url.match(re);
+    if (!m) continue;
+    const lat = parseFloat(m[1]);
+    const lon = parseFloat(m[2]);
+    if (Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180) {
+      const name = placeNameOf(url);
+      return { name: name || 'Dropped pin', label: name || 'Google Maps pin', lat, lon };
+    }
+  }
+  return null;
+};
+
+// A maps.app.goo.gl link carries no coordinates — only following it reveals them,
+// and the browser can't read a cross-origin redirect. Only Google's own map hosts
+// are followed, so this can't be used to probe arbitrary URLs.
+const MAPS_HOST = /^https:\/\/(maps\.app\.goo\.gl|goo\.gl\/maps|(www\.)?google\.[a-z.]+\/maps|maps\.google\.[a-z.]+)/i;
+
+async function handleResolve(url, res) {
+  if (!url) return json(res, 400, { error: 'missing_url' });
+  if (!MAPS_HOST.test(url)) return json(res, 400, { error: 'not_a_maps_link' });
+
+  const direct = coordsIn(url);
+  if (direct) return json(res, 200, direct);
+
+  try {
+    const r = await fetch(url, { redirect: 'follow', headers: { 'User-Agent': 'Mozilla/5.0 (AetherAI)' } });
+    const hit = coordsIn(r.url) || coordsIn(await r.text());
+    if (hit) return json(res, 200, hit);
+  } catch {
+    /* fall through */
   }
   return json(res, 404, { error: 'not_found' });
 }
@@ -295,7 +380,10 @@ async function handleRoute(from, to, res) {
   const f = (from || '').split(',');
   const t = (to || '').split(',');
   if (f.length !== 2 || t.length !== 2) return json(res, 400, { error: 'bad_coords' });
-  const url = `https://router.project-osrm.org/route/v1/driving/${f[1]},${f[0]};${t[1]},${t[0]}?alternatives=true&overview=full&geometries=geojson`;
+  // `annotations=duration` carries OSRM's per-node timings, which the client needs
+  // to work out when the driver reaches each stretch. Without it ETAs fall back to
+  // a constant-speed guess.
+  const url = `https://router.project-osrm.org/route/v1/driving/${f[1]},${f[0]};${t[1]},${t[0]}?alternatives=true&overview=full&geometries=geojson&annotations=duration`;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const { status, data } = await fetchJSON(url);
@@ -347,6 +435,9 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === 'GET' && pathname === '/api/geocode') {
     return handleGeocode(params.q, params.near, res);
+  }
+  if (req.method === 'GET' && pathname === '/api/resolve') {
+    return handleResolve(params.url, res);
   }
   if (req.method === 'GET' && pathname === '/api/route') {
     return handleRoute(params.from, params.to, res);

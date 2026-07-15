@@ -14,12 +14,22 @@ const RADAR_MAX_NATIVE_ZOOM = 7;
 
 const RAINVIEWER_INDEX = 'https://api.rainviewer.com/public/weather-maps.json';
 
-// Inline mini-map for a chat route reply: draws each alternative coloured by rain
-// risk (best highlighted), origin/destination markers, and a radar overlay.
+// Older replies were stored before per-segment data existed — fall back to one
+// segment covering the whole line.
+const segmentsOf = (route) =>
+  route.rain.segments?.length
+    ? route.rain.segments
+    : [{ from: 0, to: route.coordinates.length - 1, level: route.rain.level }];
+
+// Inline mini-map for a chat route reply: the selected route is painted per
+// stretch by the rain sampled there, alternatives sit faded behind it, and a
+// radar overlay sits on top.
 const ChatRouteMap = ({ data }) => {
   const el = useRef(null);
   const mapRef = useRef(null);
+  const routeLayer = useRef(null);
   const [ready, setReady] = useState(!!window.L);
+  const [selected, setSelected] = useState(data.bestIndex);
 
   useEffect(() => {
     if (window.L) return setReady(true);
@@ -33,44 +43,32 @@ const ChatRouteMap = ({ data }) => {
     return () => clearInterval(id);
   }, []);
 
+  // Build the map once. Redrawing routes must not tear this down, or every
+  // selection would reset the pan and zoom.
   useEffect(() => {
     const L = window.L;
     if (!ready || !L || !el.current || mapRef.current) return;
 
-    const map = L.map(el.current, { zoomControl: false, attributionControl: false });
+    const map = L.map(el.current, {
+      zoomControl: false,
+      attributionControl: false,
+      // Leaflet's wheel handler does `Math.ceil(delta / zoomSnap) * zoomSnap`, so
+      // with the default zoomSnap of 1 *any* scroll — even a 4px trackpad nudge —
+      // rounds up to a whole zoom level and jumps the map 2x. zoomSnap: 0 skips
+      // the rounding entirely and zooms by the raw fractional amount, which is the
+      // continuous feel Google Maps has.
+      zoomSnap: 0,
+      zoomDelta: 0.4,
+      // Pixels of scroll per zoom level. Higher spreads a level over more travel,
+      // so a trackpad flick glides instead of leaping.
+      wheelPxPerZoomLevel: 110,
+      // How long wheel events are batched before zooming. Lower reacts sooner and
+      // in smaller increments, which is what makes the motion read as continuous.
+      wheelDebounceTime: 20,
+    });
     mapRef.current = map;
 
     L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 19 }).addTo(map);
-
-    // Draw non-best routes first (faded), then the best on top (bright).
-    const order = data.routes
-      .map((r, i) => i)
-      .sort((a, b) => (a === data.bestIndex ? 1 : b === data.bestIndex ? -1 : 0));
-
-    order.forEach((i) => {
-      const r = data.routes[i];
-      const isBest = i === data.bestIndex;
-      const color = (LEVEL[r.rain.level] || LEVEL.dry).color;
-      L.polyline(r.coordinates, {
-        color: isBest ? color : '#94a3b8',
-        weight: isBest ? 6 : 3,
-        opacity: isBest ? 0.95 : 0.4,
-        lineJoin: 'round',
-      }).addTo(map);
-    });
-
-    const dot = (color) =>
-      L.divIcon({
-        className: '',
-        html: `<div style="width:12px;height:12px;border-radius:9999px;background:${color};border:2px solid #fff"></div>`,
-        iconSize: [14, 14],
-        iconAnchor: [7, 7],
-      });
-    L.marker([data.origin.lat, data.origin.lon], { icon: dot('#38bdf8') }).addTo(map);
-    L.marker([data.dest.lat, data.dest.lon], { icon: dot('#fb923c') }).addTo(map);
-
-    const best = data.routes[data.bestIndex];
-    map.fitBounds(L.latLngBounds(best.coordinates), { padding: [24, 24] });
 
     // Radar overlay (best-effort; may be unavailable on some networks).
     (async () => {
@@ -78,7 +76,7 @@ const ChatRouteMap = ({ data }) => {
         const res = await fetch(RAINVIEWER_INDEX);
         const idx = await res.json();
         const past = idx.radar?.past || [];
-        if (past.length) {
+        if (past.length && mapRef.current) {
           const p = past[past.length - 1];
           // maxNativeZoom stops Leaflet requesting tiles past RainViewer's z7
           // ceiling — it upscales the z7 tile instead of tiling the map with
@@ -99,10 +97,61 @@ const ChatRouteMap = ({ data }) => {
     return () => {
       map.remove();
       mapRef.current = null;
+      routeLayer.current = null;
     };
-  }, [ready, data]);
+  }, [ready]);
 
-  const best = data.routes[data.bestIndex];
+  // Redraw whenever the pick changes.
+  useEffect(() => {
+    const L = window.L;
+    const map = mapRef.current;
+    if (!ready || !L || !map) return;
+
+    if (routeLayer.current) routeLayer.current.remove();
+    const group = L.layerGroup().addTo(map);
+    routeLayer.current = group;
+
+    // Alternatives first so the selected route always sits on top.
+    data.routes.forEach((r, i) => {
+      if (i === selected) return;
+      L.polyline(r.coordinates, { color: '#94a3b8', weight: 3, opacity: 0.35, lineJoin: 'round' }).addTo(group);
+    });
+
+    // The selected route, one coloured stretch per sampled chunk. Chunks share a
+    // boundary vertex, so the pieces join seamlessly.
+    const sel = data.routes[selected];
+    segmentsOf(sel).forEach((s) => {
+      const line = L.polyline(sel.coordinates.slice(s.from, s.to + 1), {
+        color: (LEVEL[s.level] || LEVEL.unknown).color,
+        weight: 6,
+        opacity: 0.95,
+        lineJoin: 'round',
+        lineCap: 'round',
+      }).addTo(group);
+      // Each stretch was judged at its own arrival time — show that, so the
+      // verdict can be checked rather than taken on faith.
+      if (s.at) {
+        const when = new Date(s.at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+        const chance = typeof s.chance === 'number' ? ` · ${s.chance}% rain` : '';
+        line.bindTooltip(`~${when}${chance}`, { sticky: true, direction: 'top' });
+      }
+    });
+
+    const dot = (color) =>
+      L.divIcon({
+        className: '',
+        html: `<div style="width:12px;height:12px;border-radius:9999px;background:${color};border:2px solid #fff"></div>`,
+        iconSize: [14, 14],
+        iconAnchor: [7, 7],
+      });
+    L.marker([data.origin.lat, data.origin.lon], { icon: dot('#38bdf8') }).addTo(group);
+    L.marker([data.dest.lat, data.dest.lon], { icon: dot('#fb923c') }).addTo(group);
+
+    map.fitBounds(L.latLngBounds(sel.coordinates), { padding: [24, 24] });
+  }, [ready, data, selected]);
+
+  const shown = data.routes[selected];
+  const legend = [...new Set(segmentsOf(shown).map((s) => s.level))];
 
   return (
     <div className="mt-2 overflow-hidden rounded-2xl border border-white/10 bg-white/5">
@@ -117,37 +166,69 @@ const ChatRouteMap = ({ data }) => {
 
       <div ref={el} className="h-56 w-full" />
 
-      {/* Route summary */}
+      {/* Route summary — tap a row to draw that alternative instead. */}
       <div className="space-y-1.5 p-3">
         {data.routes.map((r, i) => {
           const lv = LEVEL[r.rain.level] || LEVEL.dry;
+          const isSelected = i === selected;
           const isBest = i === data.bestIndex;
           return (
-            <div
+            <button
               key={i}
-              className={`flex items-center gap-2 rounded-xl px-2.5 py-1.5 text-xs ${
-                isBest ? 'bg-white/10 text-white' : 'text-white/55'
+              type="button"
+              aria-pressed={isSelected}
+              onClick={() => setSelected(i)}
+              className={`flex w-full items-center gap-2 rounded-xl px-2.5 py-1.5 text-left text-xs transition ${
+                isSelected ? 'bg-white/10 text-white' : 'text-white/55 hover:bg-white/5 hover:text-white/80'
               }`}
             >
-              <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: isBest ? lv.color : '#94a3b8' }} />
+              <span
+                className="h-2.5 w-2.5 shrink-0 rounded-full"
+                style={{ background: isSelected ? lv.color : '#94a3b8' }}
+              />
               <RouteIcon size={12} className="shrink-0" />
-              <span className="flex-1">
+              <span className="flex-1 truncate">
                 {isBest ? 'Recommended' : `Option ${i + 1}`} · {r.distanceKm.toFixed(1)} km
               </span>
               <Clock size={12} className="shrink-0 opacity-70" />
               <span>{Math.round(r.durationMin)} min</span>
-              <span className="ml-1 rounded-full px-1.5 py-0.5 text-[10px]" style={{ background: `${lv.color}22`, color: lv.color }}>
+              <span
+                className="ml-1 shrink-0 rounded-full px-1.5 py-0.5 text-[10px]"
+                style={{ background: `${lv.color}22`, color: lv.color }}
+              >
                 {lv.label}
               </span>
-            </div>
+            </button>
           );
         })}
+
+        {/* What the colours along the drawn line mean. */}
+        {legend.length > 1 && (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-1 text-[10px] text-white/45">
+            <span>Along the road:</span>
+            {legend.map((l) => (
+              <span key={l} className="flex items-center gap-1">
+                <span className="h-1.5 w-3 rounded-full" style={{ background: (LEVEL[l] || LEVEL.unknown).color }} />
+                {(LEVEL[l] || LEVEL.unknown).label}
+              </span>
+            ))}
+          </div>
+        )}
+
         <p className="pt-1 text-[11px] text-white/45">
-          {best.rain.level === 'unknown'
+          {shown.rain.level === 'unknown'
             ? 'Could not reach the weather service to check this route.'
-            : best.rain.level === 'dry'
-            ? `No rain at any of the ${best.rain.samples} sampled points on the recommended route.`
-            : `Rain falling at ${best.rain.rainy}/${best.rain.samples} sampled points on the driest route.`}
+            : shown.rain.level === 'dry'
+            ? `No rain forecast at any of the ${shown.rain.samples} points along this route, at the times you'd pass them` +
+              (typeof shown.rain.chance === 'number' ? ` (${shown.rain.chance}% average chance).` : '.')
+            : `Rain forecast at ${shown.rain.rainy}/${shown.rain.samples} points along this route, at the times you'd pass them.`}
+          {shown.arriveAt && (
+            <>
+              {' '}
+              Arriving ~{new Date(shown.arriveAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
+              <span className="text-white/30"> · times exclude live traffic</span>
+            </>
+          )}
         </p>
       </div>
     </div>
