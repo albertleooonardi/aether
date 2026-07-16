@@ -1,0 +1,9 @@
+{
+  "buildCommand": "react-scripts build",
+  "outputDirectory": "build",
+  "functions": {
+    "api/chat.js": {
+      "maxDuration": 30
+    }
+  }
+}
