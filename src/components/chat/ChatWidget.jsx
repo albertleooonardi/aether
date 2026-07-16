@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { MessageCircle, X, Send, Bell, Sparkles, Activity } from 'lucide-react';
 import { parseReminder, answer, formatClock } from '../../chat/assistant';
-import { parseNavigation, parseWeatherIn, parseMapsUrl } from '../../chat/intents';
+import { parseNavigation, parseWeatherIn, parseMapsUrl, parseFollowUp } from '../../chat/intents';
 import { fetchWeatherByCity } from '../../services/WeatherService';
 import { geocode, geocodeCandidates, resolveMapsUrl } from '../../services/GeoService';
 import { getRoutesWithRain } from '../../services/RouteService';
@@ -51,13 +51,14 @@ const toCard = (data) => {
 
 const SUGGESTIONS = [
   'Weather in Surabaya',
+  'Any rain when I’m going to Grand Indonesia?',
   'Route from my place to Grand Indonesia — will it rain?',
   'What should I wear today?',
   'Is it a good evening for a run?',
   'Remind me to bring an umbrella at 5pm',
 ];
 
-const ChatWidget = ({ weather }) => {
+const ChatWidget = ({ weather, hourly = [], forecast = [] }) => {
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
@@ -78,25 +79,37 @@ const ChatWidget = ({ weather }) => {
   const logEnd = useRef(null);
   const weatherRef = useRef(weather);
   weatherRef.current = weather;
+  const hourlyRef = useRef(hourly);
+  hourlyRef.current = hourly;
+  const forecastRef = useRef(forecast);
+  forecastRef.current = forecast;
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
   // A route waiting on the user to say where they actually meant — either by
   // picking from the list or pasting a Google Maps link.
   const pending = useRef(null);
+  // The last answered question, so follow-ups like "what about Central Park?"
+  // or "how about at 8pm?" re-ask it with only that part changed.
+  const lastIntent = useRef(null);
 
   // Is the Gemini-backed AetherAI backend reachable?
   useEffect(() => {
     checkAI().then(setAiReady);
   }, []);
 
-  // Compact weather context handed to Gemini for grounded answers.
+  // Weather context handed to the AI for grounded answers — the same data the
+  // app's own cards render: current conditions, the next hours, and the 3-day
+  // forecast, so "later"/"tonight"/"tomorrow" are answered from real numbers.
   const aiContext = () => {
     const w = weatherRef.current;
     if (!w) return { location: null };
     return {
       location: {
         city: w.city,
+        region: w.region,
         country: w.country,
+        lat: w.lat,
+        lon: w.lon,
         localtime: w.localtime,
         temp_c: w.temp,
         feels_like_c: w.feels_like,
@@ -105,9 +118,33 @@ const ChatWidget = ({ weather }) => {
         today_low_c: w.todayLow,
         chance_of_rain_pct: w.chanceOfRain,
         humidity_pct: w.humidity,
+        dewpoint_c: w.dewpoint,
         wind_kph: w.wind,
+        wind_dir: w.windDir,
+        gust_kph: w.gust,
+        pressure_mb: w.pressure,
+        visibility_km: w.visibility,
+        cloud_pct: w.cloud,
         uv_index: w.uv,
+        uv_max_today: w.uvMax,
+        is_day: w.isDay === 1,
+        sunrise: w.sunrise,
+        sunset: w.sunset,
+        aqi_us_epa: w.aqi,
       },
+      hourly_next_hours: hourlyRef.current.map((h) => ({
+        time: h.time,
+        temp_c: h.temp,
+        condition: h.weather,
+        chance_of_rain_pct: h.chanceOfRain,
+      })),
+      forecast_days: forecastRef.current.map((d) => ({
+        date: d.date instanceof Date ? d.date.toISOString().slice(0, 10) : d.date,
+        high_c: d.high,
+        low_c: d.low,
+        condition: d.weather,
+        chance_of_rain_pct: d.chanceOfRain,
+      })),
     };
   };
 
@@ -156,6 +193,7 @@ const ChatWidget = ({ weather }) => {
     try {
       const data = await fetchWeatherByCity(place);
       const card = toCard(data);
+      lastIntent.current = { type: 'weather', place: card.name };
       sayAssistant(`Here's **${card.name}** right now — ${card.condition.toLowerCase()}, ${card.temp}°.`, {
         kind: 'weather',
         data: card,
@@ -254,6 +292,7 @@ const ChatWidget = ({ weather }) => {
     }
     if (nav.asksRain || lvl !== 'dry') summary += ADVICE[lvl];
 
+    lastIntent.current = { type: 'route', nav, origin: originLoc, dest: destLoc };
     sayAssistant(summary, {
       kind: 'route',
       data: { origin: originLoc, dest: destLoc, routes: result.routes, bestIndex: result.bestIndex },
@@ -322,6 +361,27 @@ const ChatWidget = ({ weather }) => {
       const place = parseWeatherIn(text);
       if (place) return await handleWeatherIn(place);
 
+      // "What about Central Park?" / "how about at 8pm?" — re-ask the previous
+      // question with just that part swapped.
+      const fu = parseFollowUp(text);
+      const last = lastIntent.current;
+      if (fu && last) {
+        if (fu.place) {
+          if (last.type === 'route') {
+            return await handleNavigation({
+              ...last.nav,
+              destText: fu.place,
+              isUrl: false,
+              departAt: fu.departAt ?? last.nav.departAt,
+            });
+          }
+          return await handleWeatherIn(fu.place);
+        }
+        if (fu.departAt && last.type === 'route') {
+          return await runRoute({ ...last.nav, departAt: fu.departAt }, last.origin, last.dest);
+        }
+      }
+
       // Everything else → Gemini (AetherAI), grounded with weather context.
       // Falls back to the local assistant if the AI backend/key is unavailable.
       try {
@@ -335,7 +395,7 @@ const ChatWidget = ({ weather }) => {
         setActiveProvider(out.provider);
         sayAssistant(out.reply);
       } catch {
-        sayAssistant(answer(text, weatherRef.current, reminders));
+        sayAssistant(answer(text, weatherRef.current, reminders, hourlyRef.current, forecastRef.current));
       }
     } finally {
       setBusy(false);
@@ -349,7 +409,11 @@ const ChatWidget = ({ weather }) => {
       <button
         onClick={() => setOpen((o) => !o)}
         aria-label={open ? 'Close assistant' : 'Open assistant'}
-        className="fixed bottom-5 right-5 z-50 flex h-14 w-14 items-center justify-center rounded-full bg-white text-slate-900 shadow-2xl transition-transform hover:scale-105 active:scale-95"
+        // On phones the open chat covers the whole screen (closing moves to the
+        // header ✕), so the floating toggle hides; from sm up it stays.
+        className={`${
+          open ? 'hidden sm:flex' : 'flex'
+        } fixed bottom-5 right-5 z-50 h-14 w-14 items-center justify-center rounded-full bg-white text-slate-900 shadow-2xl transition-transform hover:scale-105 active:scale-95 mb-[env(safe-area-inset-bottom)]`}
       >
         {open ? <X size={24} /> : <MessageCircle size={24} />}
         {!open && activeCount > 0 && (
@@ -360,9 +424,11 @@ const ChatWidget = ({ weather }) => {
       </button>
 
       {open && (
-        <div className="fixed bottom-24 right-5 z-50 flex h-[min(660px,82vh)] w-[min(440px,calc(100vw-2rem))] flex-col overflow-hidden rounded-3xl border border-white/10 bg-neutral-900/85 shadow-2xl backdrop-blur-2xl animate-fade-in-up">
+        // Phone: full-screen sheet (dvh tracks the on-screen keyboard). sm+: the
+        // familiar floating panel.
+        <div className="fixed inset-0 z-50 flex h-dvh w-full flex-col overflow-hidden bg-neutral-900/90 shadow-2xl backdrop-blur-2xl animate-fade-in-up sm:inset-auto sm:bottom-24 sm:right-5 sm:h-[min(660px,82vh)] sm:w-[min(440px,calc(100vw-2rem))] sm:rounded-3xl sm:border sm:border-white/10 sm:bg-neutral-900/85">
           {/* Header */}
-          <div className="flex items-center gap-2.5 border-b border-white/10 px-4 py-3.5">
+          <div className="flex items-center gap-2.5 border-b border-white/10 px-4 py-3.5 pt-[max(0.875rem,env(safe-area-inset-top))] sm:pt-3.5">
             <span className="flex h-9 w-9 items-center justify-center rounded-full bg-[#434D5C]">
               <Sparkles size={17} className="text-[#8C99AC]" />
             </span>
@@ -405,6 +471,14 @@ const ChatWidget = ({ weather }) => {
                 <Activity size={16} />
               </button>
             )}
+            {/* On phones the sheet covers the floating toggle — close lives here. */}
+            <button
+              onClick={() => setOpen(false)}
+              aria-label="Close assistant"
+              className="flex h-8 w-8 items-center justify-center rounded-lg text-white/55 transition-colors hover:bg-white/10 hover:text-white sm:hidden"
+            >
+              <X size={18} />
+            </button>
           </div>
 
           {showUsage && aiReady && <UsagePanel usage={usage} active={activeProvider} />}
@@ -466,14 +540,19 @@ const ChatWidget = ({ weather }) => {
           </div>
 
           {/* Input */}
-          <form onSubmit={handleSubmit} className="border-t border-white/10 p-3">
+          <form
+            onSubmit={handleSubmit}
+            className="border-t border-white/10 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pb-3"
+          >
             <div className="flex items-center gap-2 rounded-2xl bg-white/5 p-1.5">
               <input
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 placeholder="Ask about any place, a route, or set a reminder…"
                 disabled={busy}
-                className="w-full bg-transparent px-3 py-1.5 text-sm text-white placeholder-white/40 outline-none disabled:opacity-60"
+                // text-base on phones: anything under 16px makes iOS zoom the
+                // whole page every time the input is focused.
+                className="w-full bg-transparent px-3 py-1.5 text-base text-white placeholder-white/40 outline-none disabled:opacity-60 sm:text-sm"
               />
               <button
                 type="submit"

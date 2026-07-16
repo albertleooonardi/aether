@@ -222,7 +222,7 @@ const App = () => {
         </div>
       </div>
 
-      <ChatWidget weather={weather} />
+      <ChatWidget weather={weather} hourly={hourly} forecast={forecast} />
     </div>
   );
 };

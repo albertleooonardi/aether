@@ -1,4 +1,4 @@
-import { parseNavigation, parseMapsUrl, parseWeatherIn } from './intents';
+import { parseNavigation, parseMapsUrl, parseWeatherIn, parseFollowUp } from './intents';
 
 describe('parseWeatherIn', () => {
   // Asking about Pontianak and being told Jembatanmerah's temperature is worse
@@ -120,6 +120,63 @@ test('non-navigation messages are still ignored', () => {
 
 test('rain intent is detected', () => {
   expect(parseNavigation('route from here into Bandung, will it rain?')).toMatchObject({ asksRain: true });
+});
+
+// "when I'm going to X" is how people actually ask about rain on a trip. Only
+// route/directions/drive counted as navigation, so these fell through to a
+// generic current-city rain reply that ignored the destination entirely.
+test.each([
+  ['Is there any rain later when im going to Maspion Plaza', 'Maspion Plaza'],
+  ['any rain when I’m going to Central Park?', 'Central Park'],
+  ['will it rain when we go to Bandung tomorrow', 'Bandung'],
+  ['omw to Grand Indonesia, do I need an umbrella?', 'Grand Indonesia'],
+  ['I am visiting Kota Tua at 6pm, will it be wet?', 'Kota Tua'],
+])('parses trip phrasing %j', (text, dest) => {
+  expect(parseNavigation(text)).toMatchObject({ destText: dest, asksRain: true });
+});
+
+// "going to" is also future tense — these must NOT become routes to "rain"/"be".
+test.each(['is it going to rain today', 'is it going to be hot tomorrow', 'going to rain in Tokyo?'])(
+  'future tense %j is not navigation',
+  (text) => {
+    expect(parseNavigation(text)).toBeNull();
+  }
+);
+
+test('future-tense rain question still resolves its place', () => {
+  expect(parseWeatherIn('is it going to rain in Tokyo?')).toBe('Tokyo');
+});
+
+describe('parseFollowUp', () => {
+  test.each([
+    ['what about Central Park?', 'Central Park'],
+    ['How about Bandung', 'Bandung'],
+    ['and Surabaya?', 'Surabaya'],
+    ['what about Central Park, will it rain?', 'Central Park'],
+  ])('%j names a new place', (text, place) => {
+    expect(parseFollowUp(text)).toMatchObject({ place });
+  });
+
+  test('"what about at 8pm" changes only the time', () => {
+    const fu = parseFollowUp('what about at 8pm');
+    expect(fu.place).toBeUndefined();
+    expect(new Date(fu.departAt).getHours()).toBe(20);
+  });
+
+  test('"how about in 2 hours" changes only the time', () => {
+    const fu = parseFollowUp('how about in 2 hours');
+    expect(fu.departAt - Date.now()).toBeGreaterThan(1.9 * 3600000);
+  });
+
+  test.each([
+    'what about tomorrow',
+    'and will it rain',
+    'what about the rain',
+    'is it raining',
+    'what about here',
+  ])('%j is not a place follow-up', (text) => {
+    expect(parseFollowUp(text)).toBeNull();
+  });
 });
 
 describe('departure time', () => {

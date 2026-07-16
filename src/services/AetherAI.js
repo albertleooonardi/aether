@@ -11,7 +11,9 @@ const withTimeout = (ms) => {
 // Returns { reply, provider, model, usage }. Throws if the backend/keys are
 // unavailable (callers fall back to the local deterministic assistant).
 export const askAI = async (messages, context) => {
-  const t = withTimeout(20000);
+  // Tool-using replies (live weather/route lookups) legitimately take a while:
+  // model → tools → model again. Give them room before falling back.
+  const t = withTimeout(45000);
   try {
     const res = await fetch('/api/chat', {
       method: 'POST',

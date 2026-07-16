@@ -54,8 +54,18 @@ export const parseReminder = (text) => {
 export const formatClock = (epoch) =>
   new Date(epoch).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 
-// Deterministic answer for weather questions + reminder listing.
-export const answer = (text, weather, reminders = []) => {
+// "2026-07-16 20:00" (WeatherAPI hour.time) → "8 PM".
+const hourLabel = (time) => {
+  const d = new Date(String(time).replace(' ', 'T'));
+  return Number.isNaN(d.getTime())
+    ? String(time).slice(-5)
+    : d.toLocaleTimeString('en-US', { hour: 'numeric' });
+};
+
+// Deterministic answer for weather questions + reminder listing. `hourly` and
+// `forecast` are the same arrays the app's own cards render, so "later" and
+// "tomorrow" are answered from real data instead of today's daily number.
+export const answer = (text, weather, reminders = [], hourly = [], forecast = []) => {
   const t = text.toLowerCase().trim();
 
   if (/^(hi|hey|hello|yo)\b/.test(t)) {
@@ -64,7 +74,9 @@ export const answer = (text, weather, reminders = []) => {
       : 'Hi! Search for a city first and I can answer questions about its weather.';
   }
 
-  if (t.includes('reminder') || t.includes('my reminders') || t.includes('list')) {
+  // Bare "list" is too broad — "show me the list of raining countries" used to
+  // dump the reminder list. Only a message that mentions reminders is asking.
+  if (/\breminders?\b/.test(t) || (t.includes('list') && t.includes('remind'))) {
     const active = reminders.filter((r) => r.dueEpoch > Date.now());
     if (!active.length) return 'You have no active reminders. Try "remind me to stretch in 30 min".';
     return (
@@ -89,9 +101,15 @@ export const answer = (text, weather, reminders = []) => {
   if (/\b(?:run|jog|walk|cycl|bik|hik|outside|outdoor|exercis|workout|training)/.test(t)) {
     const notes = [];
     if (weather.chanceOfRain >= 40) notes.push(`a ${weather.chanceOfRain}% chance of rain`);
-    if (weather.temp >= 32) notes.push(`${weather.temp}° heat`);
+    if (weather.temp >= 32 || weather.feels_like >= 35) {
+      notes.push(weather.feels_like > weather.temp ? `it feels like ${weather.feels_like}°` : `${weather.temp}° heat`);
+    }
     if (weather.humidity >= 80) notes.push(`${weather.humidity}% humidity`);
     if (weather.isDay === 1 && weather.uv >= 8) notes.push(`a UV index of ${weather.uv}`);
+    // Exercising in smoke is worse than exercising in drizzle — call it out.
+    if (weather.aqi >= 3 || /haze|smoke|smog|dust/i.test(weather.description)) {
+      notes.push(`the air quality (${weather.description.toLowerCase()}) — maybe keep it short or go indoors`);
+    }
 
     const lead = `It's ${weather.temp}° and ${weather.description.toLowerCase()} in ${weather.city}, feels like ${weather.feels_like}°`;
     if (!notes.length) return `${lead} — good conditions for it.`;
@@ -99,7 +117,31 @@ export const answer = (text, weather, reminders = []) => {
     return `${lead}. Worth knowing: ${list}.`;
   }
 
+  // "show me the list of raining places" needs live multi-city data, which only
+  // the AI backend can fetch — answering it with the current city's number reads
+  // as not understanding the question. Say what's possible instead.
+  if (/\b(list|which|where)\b/.test(t) && /\b(rain|storm|wet)/.test(t) && !/\bhere\b|umbrella/.test(t)) {
+    return `I can't scan multiple cities in basic mode — that needs the AI backend. I can check one place at a time: try "weather in Surabaya" or "will it rain in Jakarta".`;
+  }
+
+  // "will it rain tomorrow" must not be answered with today's number.
+  if (t.includes('tomorrow') && forecast.length) {
+    const d = forecast[0];
+    return `Tomorrow in ${weather.city}: ${d.weather.toLowerCase()}, ${d.low}°–${d.high}°, ${d.chanceOfRain}% chance of rain.${
+      d.chanceOfRain >= 40 ? ' Plan for an umbrella.' : ''
+    }`;
+  }
+
   if (t.includes('rain') || t.includes('umbrella') || t.includes('wet')) {
+    // Hour-by-hour beats the daily number for "later"/"tonight": say when.
+    if (hourly.length) {
+      const rainy = hourly.find((h) => h.chanceOfRain >= 40);
+      if (rainy) {
+        return `Rain looks likely around ${hourLabel(rainy.time)} in ${weather.city} (${rainy.chanceOfRain}% chance, ${rainy.weather.toLowerCase()}). Worth taking an umbrella.`;
+      }
+      const peak = hourly.reduce((m, h) => Math.max(m, h.chanceOfRain ?? 0), 0);
+      return `No rain expected in ${weather.city} for the next ${hourly.length} hours — the highest hourly chance is ${peak}% (currently ${weather.description.toLowerCase()}). You can skip the umbrella.`;
+    }
     return `There's a ${weather.chanceOfRain}% chance of rain today in ${weather.city} (currently ${weather.description.toLowerCase()}). ${
       weather.chanceOfRain >= 40 ? 'Worth taking an umbrella.' : 'You can probably skip the umbrella.'
     }`;
@@ -131,5 +173,5 @@ export const answer = (text, weather, reminders = []) => {
     return `Today in ${weather.city}: ${weather.description.toLowerCase()}, ${weather.todayLow}°–${weather.todayHigh}°, ${weather.chanceOfRain}% chance of rain.`;
   }
 
-  return 'I can help with rain, temperature, wind, humidity, UV, and the forecast — or set a reminder like "remind me to close the windows at 6pm".';
+  return 'I can help with rain, temperature, wind, humidity, UV, and the forecast — here or anywhere ("weather in Surabaya"). Ask "any rain when I\'m going to Grand Indonesia?" and I\'ll check along the route, or set a reminder like "remind me to close the windows at 6pm".';
 };

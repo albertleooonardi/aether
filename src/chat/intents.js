@@ -26,8 +26,17 @@ const TIME_TAIL = /\s+(?:at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?|in\s+\d+\s*(?:minu
 
 export const parseMapsUrl = (text) => (text.match(/https?:\/\/\S+/i) || [null])[0];
 
-// Words that mark a message as asking for a way somewhere.
-const NAV = '(?:routes?|directions?|navigate|navigation|driving|drive|commute|travel|head|way)';
+// Verbs that follow future-tense "going to" — never a destination.
+const NOT_A_PLACE =
+  /^(?:be|get|feel|stay|become|start|stop|clear|cool|warm|heat|do|have|make|take|see|look|last|end|change|snow|pour|drizzle)\b/i;
+
+// Words that mark a message as asking for a way somewhere. "going to X" counts:
+// "is there any rain later when I'm going to Maspion Plaza" is a route question
+// — the rain that matters is along the way, at travel time — but with only
+// route/directions/drive here it matched nothing and fell through to a generic
+// current-city rain reply.
+const NAV =
+  '(?:routes?|directions?|navigate|navigation|driving|drive|commute|travel|head(?:ing|ed)?|way|go(?:ing|nna)?|omw|on my way|visit(?:ing)?|leaving)';
 
 // "route from X to Y", "directions to Y", "check the route for going to Y",
 // or any of those pointed at a pasted Google Maps link.
@@ -38,9 +47,12 @@ export const parseNavigation = (text) => {
   const url = parseMapsUrl(text);
 
   const navAt = t.search(new RegExp(`\\b${NAV}\\b`));
+  // "visiting Kota Tua" names its destination with no "to" at all.
+  const VISIT = /\bvisit(?:ing)?\s+([A-Za-z].*)/i;
   const hasNav =
     (/\bfrom\b/.test(t) && new RegExp(`\\b${TO}\\b`).test(t)) ||
     (navAt >= 0 && new RegExp(`\\b${NAV}\\b.*\\b${TO}\\b`).test(t)) ||
+    VISIT.test(t) ||
     t.includes('best route');
   if (!hasNav) return null;
 
@@ -64,12 +76,23 @@ export const parseNavigation = (text) => {
       m = text.slice(navAt).match(new RegExp(`\\b${TO}\\s+(.+?)${STOP}`, 'i'));
       if (m) destText = m[1].trim();
     }
+    if (!destText) {
+      m = text.match(new RegExp(`\\bvisit(?:ing)?\\s+(.+?)${STOP}`, 'i'));
+      if (m) destText = m[1].trim();
+    }
     if (!destText) return null;
 
     // Trim trailing question clauses that slip past the punctuation.
     destText = tidy(destText.replace(/\s+(is|are|will|does|do|can|and|when|any|if|should)\b.*$/i, ''));
     destText = tidy(destText.replace(TIME_TAIL, ''));
+    // "go to Bandung tomorrow" — the day is when, not part of where.
+    destText = tidy(destText.replace(/\s+(today|tonight|tomorrow|later|now|right now|please)$/i, ''));
     if (originText) originText = tidy(originText.replace(/\s+(is|are|will|does|do|can|and|when|any|if)\b.*$/i, ''));
+
+    // "going to" is also plain future tense — "is it going to rain", "going to
+    // be hot today". If what follows "to" is weather or a bare verb, nobody is
+    // travelling anywhere, so this is not navigation.
+    if (destText && (WEATHER_WORD.test(destText) || NOT_A_PLACE.test(destText))) return null;
   }
   if (!destText) return null;
 
@@ -105,8 +128,42 @@ const placeAfter = (text) => {
 // "weather in Surabaya", "will it rain in Tokyo", "what is the temp of Pontianak"
 export const parseWeatherIn = (text) => {
   const t = text.toLowerCase();
-  if (!/\b(weather|forecast|temperature|temp|rain|raining|hot|cold|humid|wind|sunny|climate|conditions?)\b/.test(t)) {
+  // \bhumid\b never matches "humidity", so "humidity of Pontianak" used to fall
+  // through and get answered with the current city's number. Match inflections.
+  if (
+    !/\b(weather|forecast|temperature|temp|rain(?:ing|y)?|hot|cold|warm|humid(?:ity)?|wind(?:y)?|sun(?:ny)?|uv|dew ?point|pressure|visibility|aqi|air quality|snow(?:ing)?|storm(?:s|y)?|climate|conditions?)\b/.test(
+      t
+    )
+  ) {
     return null;
   }
   return placeAfter(text);
+};
+
+// Bare time words that a follow-up can consist of — not geocodable.
+const TIME_WORD = /^(?:today|tonight|tomorrow|later|now|then|this (?:morning|afternoon|evening)|the morning|the afternoon|the evening)$/i;
+
+// "What about Central Park?", "how about at 8pm", "and Bandung?" — follow-ups
+// that only make sense against the previous question. Returns what changed:
+// { place } (a new destination for the same question) or { departAt } (a new
+// time for the same trip), or null when the message stands on its own.
+export const parseFollowUp = (text) => {
+  const m = text.trim().match(/^(?:(?:and\s+)?(?:what|how)\s+about|and)\s+(.+?)[?.!\s]*$/i);
+  if (!m) return null;
+  const rest = tidy(m[1]);
+
+  // "how about at 8pm" / "what about in 2 hours" — same trip, different time.
+  if (/^(?:leaving\s+|departing\s+)?(?:at|in)\b/i.test(rest)) {
+    const departAt = parseWhen(rest);
+    return departAt ? { departAt } : null;
+  }
+
+  // "and will it rain?" continues the sentence, it doesn't name a place.
+  if (/^(?:it|is|are|will|does|do|can|should|when|if)\b/i.test(rest)) return null;
+  const core = rest.replace(/^the\s+/i, ''); // "what about the rain" asks about rain, not a place
+  if (isHere(rest) || WEATHER_WORD.test(core) || TIME_WORD.test(core) || NOT_A_PLACE.test(rest)) return null;
+
+  // "what about Central Park, will it rain?" — keep the place, drop the clause.
+  const place = tidy(rest.replace(/\s+(is|are|will|does|do|can|and|when|any|if|should)\b.*$/i, '').replace(TIME_TAIL, ''));
+  return place ? { place, departAt: parseWhen(text) } : null;
 };
