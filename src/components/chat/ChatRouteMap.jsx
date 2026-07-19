@@ -1,12 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { MapPin, Flag, Clock, Route as RouteIcon } from 'lucide-react';
-
-const LEVEL = {
-  dry: { color: '#22c55e', label: 'Dry' },
-  light: { color: '#eab308', label: 'Light rain' },
-  wet: { color: '#ef4444', label: 'Rain' },
-  unknown: { color: '#94a3b8', label: 'No data' },
-};
+import { MapPin, Flag, Clock, Route as RouteIcon, Maximize2 } from 'lucide-react';
+import { LEVEL, segmentsOf } from '../../utils/RouteLevels';
+import { enableSmoothWheelZoom } from '../../utils/SmoothZoom';
 
 // RainViewer's free radar tiles only exist up to z7; above that it serves a
 // "Zoom Level Not Supported" placeholder image instead of a transparent tile.
@@ -14,17 +9,11 @@ const RADAR_MAX_NATIVE_ZOOM = 7;
 
 const RAINVIEWER_INDEX = 'https://api.rainviewer.com/public/weather-maps.json';
 
-// Older replies were stored before per-segment data existed — fall back to one
-// segment covering the whole line.
-const segmentsOf = (route) =>
-  route.rain.segments?.length
-    ? route.rain.segments
-    : [{ from: 0, to: route.coordinates.length - 1, level: route.rain.level }];
-
 // Inline mini-map for a chat route reply: the selected route is painted per
 // stretch by the rain sampled there, alternatives sit faded behind it, and a
-// radar overlay sits on top.
-const ChatRouteMap = ({ data }) => {
+// radar overlay sits on top. `onOpenInMap` hands the same route to the app's
+// full map page.
+const ChatRouteMap = ({ data, onOpenInMap }) => {
   const el = useRef(null);
   const mapRef = useRef(null);
   const routeLayer = useRef(null);
@@ -49,22 +38,18 @@ const ChatRouteMap = ({ data }) => {
     const L = window.L;
     if (!ready || !L || !el.current || mapRef.current) return;
 
+    enableSmoothWheelZoom(L);
     const map = L.map(el.current, {
       zoomControl: false,
       attributionControl: false,
-      // Leaflet's wheel handler does `Math.ceil(delta / zoomSnap) * zoomSnap`, so
-      // with the default zoomSnap of 1 *any* scroll — even a 4px trackpad nudge —
-      // rounds up to a whole zoom level and jumps the map 2x. zoomSnap: 0 skips
-      // the rounding entirely and zooms by the raw fractional amount, which is the
-      // continuous feel Google Maps has.
+      // Continuous zoom: zoomSnap 0 allows fractional levels, and the stock
+      // wheel handler — which jumps in discrete steps per wheel event — is
+      // replaced with the rAF-eased SmoothWheelZoom glide.
       zoomSnap: 0,
       zoomDelta: 0.4,
-      // Pixels of scroll per zoom level. Higher spreads a level over more travel,
-      // so a trackpad flick glides instead of leaping.
-      wheelPxPerZoomLevel: 110,
-      // How long wheel events are batched before zooming. Lower reacts sooner and
-      // in smaller increments, which is what makes the motion read as continuous.
-      wheelDebounceTime: 20,
+      scrollWheelZoom: false,
+      smoothWheelZoom: true,
+      smoothSensitivity: 1.2,
     });
     mapRef.current = map;
 
@@ -162,6 +147,15 @@ const ChatRouteMap = ({ data }) => {
         <span className="text-white/30">→</span>
         <Flag size={13} className="text-orange-300" />
         <span className="truncate">{data.dest.name}</span>
+        {onOpenInMap && (
+          <button
+            onClick={() => onOpenInMap(data)}
+            title="Open on the full map page"
+            className="ml-auto flex shrink-0 items-center gap-1 rounded-lg bg-white/10 px-2 py-1 text-[10px] font-medium text-white/70 transition hover:bg-white/20 hover:text-white"
+          >
+            <Maximize2 size={11} /> Open in map
+          </button>
+        )}
       </div>
 
       <div ref={el} className="h-56 w-full" />

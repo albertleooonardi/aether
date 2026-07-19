@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Loader2 } from 'lucide-react';
+import { Loader2, CloudSun, Map as MapIcon } from 'lucide-react';
 import Logo from './components/Logo';
+import MapPage from './components/map/MapPage';
 import SearchBar from './components/SearchBar';
 import WeatherCard from './components/WeatherCard';
 import HourlyForecast from './components/HourlyForecast';
@@ -23,6 +24,16 @@ const App = () => {
   const [loading, setLoading] = useState(false);
   const [locating, setLocating] = useState(false);
   const [error, setError] = useState('');
+  const [view, setView] = useState('weather'); // 'weather' | 'map'
+  // Mount the map on first visit, then keep it alive across tab switches so
+  // pan/zoom/routes survive; hiding is done with CSS.
+  const [mapMounted, setMapMounted] = useState(false);
+  // A route the chatbot computed and asked to show on the map page.
+  const [chatRoute, setChatRoute] = useState(null);
+
+  useEffect(() => {
+    if (view === 'map') setMapMounted(true);
+  }, [view]);
 
   const handleLoadLastCity = useCallback(async () => {
     const lastCity = await loadLastCity();
@@ -171,15 +182,45 @@ const App = () => {
       <WeatherAnimations weather={weather} />
 
       <div className="relative z-10 mx-auto w-full max-w-[1800px] px-4 py-5 md:px-8 md:py-6 lg:px-12">
-        {/* Brand */}
+        {/* Brand + view switch */}
         <header className="mb-5 flex items-center gap-3">
           <Logo size={40} />
           <span className="text-xl font-semibold tracking-[0.22em] text-white">AETHER</span>
+
+          <nav className="ml-auto flex gap-1 rounded-2xl glass p-1">
+            {[
+              { id: 'weather', label: 'Weather', icon: CloudSun },
+              { id: 'map', label: 'Map', icon: MapIcon },
+            ].map(({ id, label, icon: Icon }) => (
+              <button
+                key={id}
+                onClick={() => setView(id)}
+                aria-pressed={view === id}
+                className={`flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium transition ${
+                  view === id ? 'bg-white text-slate-900' : 'text-white/60 hover:bg-white/10 hover:text-white'
+                }`}
+              >
+                <Icon size={14} />
+                <span className="hidden sm:inline">{label}</span>
+              </button>
+            ))}
+          </nav>
         </header>
 
-        {error && <ErrorMessage message={error} />}
+        {error && view === 'weather' && <ErrorMessage message={error} />}
 
-        <div className="grid animate-fade-in-up gap-4 lg:grid-cols-5">
+        {mapMounted && (
+          <div className={view === 'map' ? '' : 'hidden'}>
+            <MapPage
+              weather={weather}
+              visible={view === 'map'}
+              initialRoute={chatRoute}
+              onRouteShown={() => setChatRoute(null)}
+            />
+          </div>
+        )}
+
+        <div className={view === 'weather' ? 'grid animate-fade-in-up gap-4 lg:grid-cols-5' : 'hidden'}>
           {/* Left: search + hero */}
           <div className="flex flex-col gap-4 lg:col-span-2">
             <SearchBar
@@ -222,7 +263,15 @@ const App = () => {
         </div>
       </div>
 
-      <ChatWidget weather={weather} hourly={hourly} forecast={forecast} />
+      <ChatWidget
+        weather={weather}
+        hourly={hourly}
+        forecast={forecast}
+        onOpenRoute={(data) => {
+          setChatRoute(data);
+          setView('map');
+        }}
+      />
     </div>
   );
 };

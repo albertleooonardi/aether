@@ -58,7 +58,7 @@ const SUGGESTIONS = [
   'Remind me to bring an umbrella at 5pm',
 ];
 
-const ChatWidget = ({ weather, hourly = [], forecast = [] }) => {
+const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
@@ -500,7 +500,21 @@ const ChatWidget = ({ weather, hourly = [], forecast = [] }) => {
                   <div className="min-w-0 max-w-[calc(100%-2.5rem)] flex-1 text-white/90">
                     <RichText text={m.text} />
                     {m.kind === 'weather' && <WeatherReplyCard data={m.data} />}
-                    {m.kind === 'route' && <ChatRouteMap data={m.data} />}
+                    {m.kind === 'route' && (
+                      <ChatRouteMap
+                        data={m.data}
+                        onOpenInMap={
+                          onOpenRoute
+                            ? (d) => {
+                                // Hand the already-computed route to the full map
+                                // page and get the chat sheet out of its way.
+                                onOpenRoute(d);
+                                setOpen(false);
+                              }
+                            : undefined
+                        }
+                      />
+                    )}
                     {m.kind === 'choice' && <PlacePicker data={m.data} onPick={(c) => handlePick(m, c)} />}
                   </div>
                 </div>
