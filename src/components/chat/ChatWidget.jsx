@@ -413,7 +413,7 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
         // header ✕), so the floating toggle hides; from sm up it stays.
         className={`${
           open ? 'hidden sm:flex' : 'flex'
-        } fixed bottom-5 right-5 z-50 h-14 w-14 items-center justify-center rounded-full bg-white text-slate-900 shadow-2xl transition-transform hover:scale-105 active:scale-95 mb-[env(safe-area-inset-bottom)]`}
+        } fixed bottom-5 right-5 z-50 h-14 w-14 items-center justify-center rounded-full bg-accent text-accentFg shadow-2xl transition-transform hover:scale-105 active:scale-95 mb-[env(safe-area-inset-bottom)]`}
       >
         {open ? <X size={24} /> : <MessageCircle size={24} />}
         {!open && activeCount > 0 && (
@@ -426,15 +426,15 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
       {open && (
         // Phone: full-screen sheet (dvh tracks the on-screen keyboard). sm+: the
         // familiar floating panel.
-        <div className="fixed inset-0 z-50 flex h-dvh w-full flex-col overflow-hidden bg-neutral-900/90 shadow-2xl backdrop-blur-2xl animate-fade-in-up sm:inset-auto sm:bottom-24 sm:right-5 sm:h-[min(660px,82vh)] sm:w-[min(440px,calc(100vw-2rem))] sm:rounded-3xl sm:border sm:border-white/10 sm:bg-neutral-900/85">
+        <div className="fixed inset-0 z-50 flex h-dvh w-full flex-col overflow-hidden bg-panel/90 shadow-2xl backdrop-blur-2xl animate-fade-in-up sm:inset-auto sm:bottom-24 sm:right-5 sm:h-[min(660px,82vh)] sm:w-[min(440px,calc(100vw-2rem))] sm:rounded-3xl sm:border sm:border-ink/10 sm:bg-panel/85">
           {/* Header */}
-          <div className="flex items-center gap-2.5 border-b border-white/10 px-4 py-3.5 pt-[max(0.875rem,env(safe-area-inset-top))] sm:pt-3.5">
+          <div className="flex items-center gap-2.5 border-b border-ink/10 px-4 py-3.5 pt-[max(0.875rem,env(safe-area-inset-top))] sm:pt-3.5">
             <span className="flex h-9 w-9 items-center justify-center rounded-full bg-[#434D5C]">
               <Sparkles size={17} className="text-[#8C99AC]" />
             </span>
             <div className="flex-1">
               <div className="flex items-center gap-1.5">
-                <span className="text-sm font-semibold text-white">AetherAI</span>
+                <span className="text-sm font-semibold text-ink">AetherAI</span>
                 {/* Without a provider key the LLM never runs and every reply comes
                     from the small rule-based assistant. Say so, rather than just
                     seeming dim. */}
@@ -447,12 +447,12 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
                   </span>
                 )}
               </div>
-              <div className="text-[11px] text-white/50">
+              <div className="text-[11px] text-ink/50">
                 {weather ? `${weather.city} · ${weather.temp}°` : 'Ask me anything about the weather'}
               </div>
             </div>
             {activeCount > 0 && (
-              <span className="flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-[11px] text-white/70">
+              <span className="flex items-center gap-1 rounded-full bg-ink/10 px-2.5 py-1 text-[11px] text-ink/70">
                 <Bell size={12} /> {activeCount}
               </span>
             )}
@@ -465,7 +465,7 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
                 aria-label="AI usage & models"
                 title="AI usage & models"
                 className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${
-                  showUsage ? 'bg-white/15 text-white' : 'text-white/55 hover:bg-white/10 hover:text-white'
+                  showUsage ? 'bg-ink/15 text-ink' : 'text-ink/55 hover:bg-ink/10 hover:text-ink'
                 }`}
               >
                 <Activity size={16} />
@@ -475,7 +475,7 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
             <button
               onClick={() => setOpen(false)}
               aria-label="Close assistant"
-              className="flex h-8 w-8 items-center justify-center rounded-lg text-white/55 transition-colors hover:bg-white/10 hover:text-white sm:hidden"
+              className="flex h-8 w-8 items-center justify-center rounded-lg text-ink/55 transition-colors hover:bg-ink/10 hover:text-ink sm:hidden"
             >
               <X size={18} />
             </button>
@@ -488,7 +488,7 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
             {messages.map((m) =>
               m.role === 'user' ? (
                 <div key={m.id} className="flex justify-end">
-                  <div className="max-w-[85%] whitespace-pre-line rounded-2xl rounded-br-md bg-white px-3.5 py-2 text-sm text-slate-800">
+                  <div className="max-w-[85%] whitespace-pre-line rounded-2xl rounded-br-md bg-accent px-3.5 py-2 text-sm text-accentFg">
                     {m.text}
                   </div>
                 </div>
@@ -497,7 +497,7 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
                   <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#434D5C]">
                     <Sparkles size={13} className="text-[#8C99AC]" />
                   </span>
-                  <div className="min-w-0 max-w-[calc(100%-2.5rem)] flex-1 text-white/90">
+                  <div className="min-w-0 max-w-[calc(100%-2.5rem)] flex-1 text-ink/90">
                     <RichText text={m.text} />
                     {m.kind === 'weather' && <WeatherReplyCard data={m.data} />}
                     {m.kind === 'route' && (
@@ -526,11 +526,11 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
                 <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#434D5C]">
                   <Sparkles size={13} className="text-[#8C99AC]" />
                 </span>
-                <div className="flex items-center gap-1 rounded-2xl bg-white/10 px-3.5 py-3">
+                <div className="flex items-center gap-1 rounded-2xl bg-ink/10 px-3.5 py-3">
                   {[0, 1, 2].map((i) => (
                     <span
                       key={i}
-                      className="h-1.5 w-1.5 animate-bounce rounded-full bg-white/60"
+                      className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink/60"
                       style={{ animationDelay: `${i * 0.15}s` }}
                     />
                   ))}
@@ -546,7 +546,7 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
               <button
                 key={q}
                 onClick={() => setInput(q)}
-                className="shrink-0 rounded-full bg-white/10 px-3 py-1.5 text-xs text-white/70 transition-colors hover:bg-white/20"
+                className="shrink-0 rounded-full bg-ink/10 px-3 py-1.5 text-xs text-ink/70 transition-colors hover:bg-ink/20"
               >
                 {q}
               </button>
@@ -556,9 +556,9 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
           {/* Input */}
           <form
             onSubmit={handleSubmit}
-            className="border-t border-white/10 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pb-3"
+            className="border-t border-ink/10 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pb-3"
           >
-            <div className="flex items-center gap-2 rounded-2xl bg-white/5 p-1.5">
+            <div className="flex items-center gap-2 rounded-2xl bg-ink/5 p-1.5">
               <input
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
@@ -566,13 +566,13 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
                 disabled={busy}
                 // text-base on phones: anything under 16px makes iOS zoom the
                 // whole page every time the input is focused.
-                className="w-full bg-transparent px-3 py-1.5 text-base text-white placeholder-white/40 outline-none disabled:opacity-60 sm:text-sm"
+                className="w-full bg-transparent px-3 py-1.5 text-base text-ink placeholder-ink/40 outline-none disabled:opacity-60 sm:text-sm"
               />
               <button
                 type="submit"
                 aria-label="Send"
                 disabled={busy}
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white text-slate-900 transition-transform active:scale-95 disabled:opacity-50"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-accent text-accentFg transition-transform active:scale-95 disabled:opacity-50"
               >
                 <Send size={16} />
               </button>

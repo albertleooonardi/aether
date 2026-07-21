@@ -44,9 +44,15 @@ export const distanceKm = (a, b) => {
 // highest-ranked of each cluster.
 const NEAR_DUPLICATE_KM = 0.4;
 
+// Two entries reading exactly "Grand Orchard, Jakarta, Indonesia" are not a
+// choice the user can make — whatever distinguishes them isn't on screen, so
+// picking is a coin flip. Identical labels collapse no matter how far apart they
+// sit; only the highest-ranked survives.
+const sameLabel = (a, b) => (a.label || a.name || '').toLowerCase() === (b.label || b.name || '').toLowerCase();
+
 const dedupe = (list) =>
   list.reduce((keep, c) => {
-    if (!keep.some((k) => distanceKm(k, c) < NEAR_DUPLICATE_KM)) keep.push(c);
+    if (!keep.some((k) => distanceKm(k, c) < NEAR_DUPLICATE_KM || sameLabel(k, c))) keep.push(c);
     return keep;
   }, []);
 
@@ -121,66 +127,75 @@ export const resolveMapsUrl = async (url) => {
 
 /* ---------------- geocoding ---------------- */
 
-export const geocodeCandidates = async (query, near) => {
-  // 1) Backend proxy (reliable, sends a proper User-Agent to the geocoders).
-  try {
-    const at = biased(near) ? `&near=${near.lat},${near.lon}` : '';
-    const res = await fetch(`/api/geocode?q=${encodeURIComponent(query)}${at}`);
-    if (res.ok) {
+// Each source is asked for well over the display cap: dedupe collapses a POI and
+// its sub-features into one entry, so a request for 6 routinely came back as 2.
+const PROVIDER_LIMIT = 15;
+
+/*
+ * Ranked candidates for a place name.
+ *
+ * Sources are tried in order of how well they answer this kind of query, but a
+ * source that returns *something* no longer ends the search: Photon indexes POIs
+ * far better while Nominatim is stronger on plain place names, and stopping at
+ * the first hit meant a mall search never saw the district of the same name.
+ * Results are concatenated in provider order — so the best source still ranks
+ * first — and deduped across the whole set by real distance.
+ *
+ * Collection stops once `limit` distinct places exist, so the common case still
+ * costs a single request.
+ */
+export const geocodeCandidates = async (query, near, limit = MAX_CANDIDATES) => {
+  const at = biased(near) ? `&near=${near.lat},${near.lon}` : '';
+  const atLatLon = biased(near) ? `&lat=${near.lat}&lon=${near.lon}` : '';
+
+  const sources = [
+    // 1) Backend proxy (reliable, sends a proper User-Agent to the geocoders).
+    async () => {
+      const res = await fetch(`/api/geocode?q=${encodeURIComponent(query)}&limit=${PROVIDER_LIMIT}${at}`);
+      if (!res.ok) return [];
       const body = await res.json();
-      const list = (body.candidates || []).filter((c) => typeof c.lat === 'number');
-      if (list.length) return dedupe(list).slice(0, MAX_CANDIDATES);
-    }
-  } catch {
-    /* backend down → fall back to direct calls below */
-  }
-
-  // 2) Direct Photon.
-  try {
-    const at = biased(near) ? `&lat=${near.lat}&lon=${near.lon}` : '';
-    const res = await fetch(`${PHOTON}?q=${encodeURIComponent(query)}&limit=6&lang=en${at}`);
-    if (res.ok) {
-      const list = ((await res.json()).features || []).map(fromPhoton).filter(Boolean);
-      if (list.length) return dedupe(list).slice(0, MAX_CANDIDATES);
-    }
-  } catch {
-    /* fall through to Nominatim */
-  }
-
-  // 3) Direct Nominatim, most significant first — otherwise a minor hamlet
-  //    outranks the city of the same name.
-  try {
-    const url = `${NOMINATIM}?q=${encodeURIComponent(query)}&format=json&limit=6&addressdetails=0${viewboxOf(near)}`;
-    const res = await fetch(url, { headers: { Accept: 'application/json' } });
-    if (res.ok) {
-      const arr = await res.json();
-      if (arr.length) {
-        const list = [...arr].sort((a, b) => (b.importance || 0) - (a.importance || 0)).map(fromNominatim);
-        return dedupe(list).slice(0, MAX_CANDIDATES);
-      }
-    }
-  } catch {
-    /* fall through to WeatherAPI */
-  }
-
-  // 4) WeatherAPI city search — plain place names only.
-  try {
-    const res = await fetch(`${WEATHER_BASE_URL}/search.json?key=${WEATHER_API_KEY}&q=${encodeURIComponent(query)}`);
-    if (res.ok) {
-      const arr = await res.json();
-      const list = arr.map((l) => ({
+      return (body.candidates || []).filter((c) => typeof c.lat === 'number');
+    },
+    // 2) Direct Photon — strongest on POIs.
+    async () => {
+      const res = await fetch(`${PHOTON}?q=${encodeURIComponent(query)}&limit=${PROVIDER_LIMIT}&lang=en${atLatLon}`);
+      if (!res.ok) return [];
+      return ((await res.json()).features || []).map(fromPhoton).filter(Boolean);
+    },
+    // 3) Direct Nominatim, most significant first — otherwise a minor hamlet
+    //    outranks the city of the same name.
+    async () => {
+      const url = `${NOMINATIM}?q=${encodeURIComponent(query)}&format=json&limit=${PROVIDER_LIMIT}&addressdetails=0${viewboxOf(near)}`;
+      const res = await fetch(url, { headers: { Accept: 'application/json' } });
+      if (!res.ok) return [];
+      return [...(await res.json())].sort((a, b) => (b.importance || 0) - (a.importance || 0)).map(fromNominatim);
+    },
+    // 4) WeatherAPI city search — plain place names only.
+    async () => {
+      const res = await fetch(`${WEATHER_BASE_URL}/search.json?key=${WEATHER_API_KEY}&q=${encodeURIComponent(query)}`);
+      if (!res.ok) return [];
+      return (await res.json()).map((l) => ({
         name: l.name,
         label: [l.name, l.region, l.country].filter(Boolean).join(', '),
         lat: l.lat,
         lon: l.lon,
       }));
-      if (list.length) return dedupe(list).slice(0, MAX_CANDIDATES);
+    },
+  ];
+
+  const found = [];
+  for (const load of sources) {
+    try {
+      found.push(...(await load()));
+    } catch {
+      /* try the next source */
     }
-  } catch {
-    /* ignore */
+    // Dedupe as we go: 15 raw hits can collapse to 3 real places, and only the
+    // deduped count tells us whether it's worth asking anyone else.
+    if (dedupe(found).length >= limit) break;
   }
 
-  return [];
+  return dedupe(found).slice(0, limit);
 };
 
-export const geocode = async (query, near) => (await geocodeCandidates(query, near))[0] || null;
+export const geocode = async (query, near) => (await geocodeCandidates(query, near, 1))[0] || null;

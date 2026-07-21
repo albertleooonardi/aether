@@ -8,7 +8,7 @@ const renderInline = (line, key) => {
     <React.Fragment key={key}>
       {parts.map((p, i) =>
         p.startsWith('**') && p.endsWith('**') ? (
-          <strong key={i} className="font-semibold text-white">
+          <strong key={i} className="font-semibold text-ink">
             {p.slice(2, -2)}
           </strong>
         ) : (
@@ -28,7 +28,7 @@ const RichText = ({ text }) => {
         if (bullet) {
           return (
             <div key={i} className="flex gap-2">
-              <span className="mt-1 h-1 w-1 shrink-0 rounded-full bg-white/50" />
+              <span className="mt-1 h-1 w-1 shrink-0 rounded-full bg-ink/50" />
               <span>{renderInline(bullet[1], i)}</span>
             </div>
           );

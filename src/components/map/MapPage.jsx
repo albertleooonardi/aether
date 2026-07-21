@@ -19,34 +19,127 @@ import { LEVEL, segmentsOf } from '../../utils/RouteLevels';
 import { enableSmoothWheelZoom } from '../../utils/SmoothZoom';
 import { getWeatherIcon } from '../../utils/WeatherIcons';
 import { fetchCurrent, fetchWeatherByCoords } from '../../services/WeatherService';
-import { geocode, geocodeCandidates } from '../../services/GeoService';
+import { geocode, geocodeCandidates, resolveMapsUrl } from '../../services/GeoService';
+import { parseMapsUrl } from '../../chat/intents';
 import { getRoutesWithRain } from '../../services/RouteService';
+
+// A search box is a different thing from the chat's "which one did you mean?"
+// prompt: there, four options keep a disambiguation tap quick, but here people
+// are scanning for their place and expect a real result list.
+const SEARCH_RESULTS = 10;
+
+// A dead end is the one moment the link escape hatch is worth explaining, so the
+// failure names the way forward instead of just reporting the miss.
+const NOT_FOUND = (what) => `Couldn't find “${what}”. Paste a Google Maps link and I'll use that exact spot.`;
 
 // RainViewer's free radar tiles only exist up to z7; above that it serves a
 // "Zoom Level Not Supported" placeholder image instead of a transparent tile.
 const RADAR_MAX_NATIVE_ZOOM = 7;
 const RAINVIEWER_INDEX = 'https://api.rainviewer.com/public/weather-maps.json';
 
-// One WeatherAPI call per visible city — keep results warm for a while.
+// One WeatherAPI call per visible point — keep results warm for a while.
 const CITY_CACHE_MS = 10 * 60 * 1000;
-const MAX_VISIBLE_CITIES = 14;
+const MAX_VISIBLE_CITIES = 12;
 
-// Classify a WeatherAPI condition into a marker style. "Event" classes (rain,
-// thunder, snow) get loud colours so bad weather pops out of the map the way
-// traffic jams pop out of Google Maps.
+// Below this zoom the curated city list is sparse by design (a world/country
+// view only needs a handful of labelled cities). Past it — zoomed into a single
+// city or region — those curated points are nearly all off-screen, so barely
+// anything would show. From here on the viewport itself is sampled.
+const LOCAL_ZOOM = 6;
+const SAMPLE_COUNT = 10;
+
+// Sample positions follow a golden-angle spiral rather than rows and columns.
+// A grid is instantly readable *as* a grid — the eye locks onto the alignment
+// and the map looks like a survey instead of weather. The spiral spreads points
+// just as evenly by area while never repeating an angle, so it scatters.
+const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+
+// The spiral is anchored to a snapped centre so small pans reuse the same points
+// (and their cached weather) instead of reshuffling every marker on every nudge.
+const snap = (v, step) => Math.round(v / step) * step;
+
+const scatterPoints = (bounds, n) => {
+  const sw = bounds.getSouthWest();
+  const ne = bounds.getNorthEast();
+  const rLat = (ne.lat - sw.lat) / 2;
+  const rLon = (ne.lng - sw.lng) / 2;
+  const cLat = snap((sw.lat + ne.lat) / 2, rLat / 2);
+  const cLon = snap((sw.lng + ne.lng) / 2, rLon / 2);
+
+  return Array.from({ length: n }, (_, i) => {
+    // sqrt keeps the points area-even instead of bunching at the centre.
+    const t = Math.sqrt((i + 0.5) / n);
+    const a = i * GOLDEN_ANGLE;
+    return {
+      lat: cLat + Math.sin(a) * t * rLat * 0.82,
+      lon: cLon + Math.cos(a) * t * rLon * 0.82,
+    };
+  });
+};
+
+// ~1 km buckets: a slight drift in a sample's position still hits the same cache
+// entry, which is what keeps panning cheap.
+const cacheKey = (lat, lon) => `${lat.toFixed(2)},${lon.toFixed(2)}`;
+
+/* Marker styles. Hue picks the weather *family* (violet storms, blue rain, teal
+ * ice, cyan snow, grey cloud, amber sun) and depth within that hue picks the
+ * *intensity* — so a glance reads both what and how much. `light` is the
+ * highlight the bubble's gradient catches at the top. `event` decides whether an
+ * unnamed scatter point is worth drawing at all. */
+const S = {
+  thunderSevere: { key: 'thunderSevere', emoji: '⛈️', bg: '#c026d3', light: '#f0abfc', event: true },
+  thunder: { key: 'thunder', emoji: '🌩️', bg: '#8b5cf6', light: '#c4b5fd', event: true },
+
+  rainHeavy: { key: 'rainHeavy', emoji: '🌧️', bg: '#1d4ed8', light: '#93c5fd', event: true },
+  rain: { key: 'rain', emoji: '🌧️', bg: '#2563eb', light: '#93c5fd', event: true },
+  rainLight: { key: 'rainLight', emoji: '🌦️', bg: '#3b82f6', light: '#bfdbfe', event: true },
+  drizzle: { key: 'drizzle', emoji: '💧', bg: '#38bdf8', light: '#bae6fd', event: true },
+
+  sleet: { key: 'sleet', emoji: '🌨️', bg: '#0d9488', light: '#5eead4', event: true },
+  ice: { key: 'ice', emoji: '🧊', bg: '#0891b2', light: '#a5f3fc', event: true },
+  blizzard: { key: 'blizzard', emoji: '🌬️', bg: '#0e7490', light: '#a5f3fc', event: true },
+  snowHeavy: { key: 'snowHeavy', emoji: '❄️', bg: '#06b6d4', light: '#cffafe', event: true },
+  snow: { key: 'snow', emoji: '🌨️', bg: '#22d3ee', light: '#cffafe', event: true },
+
+  fog: { key: 'fog', emoji: '🌫️', bg: '#8a9a9a', light: '#d1dcdc', event: false },
+  haze: { key: 'haze', emoji: '🌁', bg: '#b08968', light: '#e7d3c0', event: false },
+  nearby: { key: 'nearby', emoji: '🌥️', bg: '#6b8ca8', light: '#bcd2e2', event: false },
+  overcast: { key: 'overcast', emoji: '☁️', bg: '#5b6b80', light: '#a7b4c4', event: false },
+  cloudy: { key: 'cloudy', emoji: '☁️', bg: '#7c8da3', light: '#c3cede', event: false },
+  partlyDay: { key: 'partlyDay', emoji: '⛅', bg: '#93a5c4', light: '#dbe4f0', event: false },
+  partlyNight: { key: 'partlyNight', emoji: '☁️', bg: '#6b7fa8', light: '#b3c1da', event: false },
+  sunny: { key: 'sunny', emoji: '☀️', bg: '#f59e0b', light: '#fde68a', event: false },
+  clearNight: { key: 'clearNight', emoji: '🌙', bg: '#6366f1', light: '#c7d2fe', event: false },
+};
+
 const classify = (text, isDay) => {
   const t = (text || '').toLowerCase();
-  if (t.includes('thunder')) return { key: 'thunder', emoji: '⛈️', bg: '#7c3aed', event: true };
-  if (t.includes('snow') || t.includes('blizzard') || t.includes('sleet') || t.includes('ice'))
-    return { key: 'snow', emoji: '🌨️', bg: '#0891b2', event: true };
-  if (t.includes('drizzle') || t.includes('light rain'))
-    return { key: 'drizzle', emoji: '🌦️', bg: '#0284c7', event: true };
-  if (t.includes('rain') || t.includes('shower')) return { key: 'rain', emoji: '🌧️', bg: '#2563eb', event: true };
-  if (t.includes('mist') || t.includes('fog') || t.includes('haze'))
-    return { key: 'fog', emoji: '🌫️', bg: '#334155', event: false };
-  if (t.includes('sunny') || t.includes('clear'))
-    return { key: 'clear', emoji: isDay ? '☀️' : '🌙', bg: '#1f2937', event: false };
-  return { key: 'cloud', emoji: '☁️', bg: '#1f2937', event: false };
+  const heavy = /heavy|torrential/.test(t);
+
+  // "Patchy rain nearby" / "Thundery outbreaks in nearby" report weather *around*
+  // the point, not on it — and the former is the default daytime condition across
+  // much of the tropics. Treating them as events is what would paint a bubble on
+  // every sample over Jakarta on an ordinary afternoon.
+  if (/nearby|possible/.test(t)) return S.nearby;
+
+  if (t.includes('thunder')) return heavy ? S.thunderSevere : S.thunder;
+  if (t.includes('blizzard')) return S.blizzard;
+  if (t.includes('ice pellet') || t.includes('freezing')) return S.ice;
+  if (t.includes('sleet')) return S.sleet;
+  if (t.includes('snow')) return heavy ? S.snowHeavy : S.snow;
+  if (t.includes('drizzle')) return S.drizzle;
+  if (t.includes('rain') || t.includes('shower')) {
+    if (heavy) return S.rainHeavy;
+    return t.includes('moderate') ? S.rain : S.rainLight;
+  }
+  if (t.includes('fog') || t.includes('mist')) return S.fog;
+  if (/haze|smoke|dust|sand/.test(t)) return S.haze;
+  if (t.includes('overcast')) return S.overcast;
+  if (t.includes('partly') || t.includes('partial')) return isDay ? S.partlyDay : S.partlyNight;
+  if (t.includes('cloud')) return S.cloudy;
+  if (t.includes('sunny')) return S.sunny;
+  if (t.includes('clear')) return isDay ? S.sunny : S.clearNight;
+  return isDay ? S.cloudy : S.partlyNight;
 };
 
 // Which curated cities deserve a marker at this zoom.
@@ -95,7 +188,14 @@ const toDetail = (data) => {
  * time you'd actually drive it. The chat can push a route it computed straight
  * onto this map via `initialRoute`.
  */
-const MapPage = ({ weather, visible = true, initialRoute, onRouteShown }) => {
+// CARTO ships matching light/dark basemaps, so the map flips with the app
+// instead of staying a dark slab on a light page.
+const BASEMAP = {
+  dark: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+  light: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+};
+
+const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRouteShown }) => {
   const el = useRef(null);
   const mapRef = useRef(null);
   const markerLayer = useRef(null);
@@ -103,6 +203,7 @@ const MapPage = ({ weather, visible = true, initialRoute, onRouteShown }) => {
   const pinMarker = useRef(null);
   const radarLayer = useRef(null);
   const radarUrl = useRef(null);
+  const baseLayer = useRef(null);
   const cityCache = useRef(new Map()); // name → { at, wx }
   const fetchTick = useRef(0);
   const detailRef = useRef(null); // latest openDetail, for Leaflet handlers
@@ -153,7 +254,7 @@ const MapPage = ({ weather, visible = true, initialRoute, onRouteShown }) => {
     }).setView(center, weather ? 9 : 4.5);
     mapRef.current = map;
 
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    baseLayer.current = L.tileLayer(BASEMAP[theme] || BASEMAP.dark, {
       maxZoom: 19,
       attribution: '© OpenStreetMap · © CARTO',
     }).addTo(map);
@@ -180,6 +281,12 @@ const MapPage = ({ weather, visible = true, initialRoute, onRouteShown }) => {
   useEffect(() => {
     if (visible) setTimeout(() => mapRef.current?.invalidateSize(), 50);
   }, [visible]);
+
+  // Theme flip: swap the basemap in place rather than rebuilding the map, so the
+  // current pan, zoom and drawn route all survive.
+  useEffect(() => {
+    baseLayer.current?.setUrl(BASEMAP[theme] || BASEMAP.dark);
+  }, [theme]);
 
   /* ---------------- radar overlay ---------------- */
   useEffect(() => {
@@ -226,7 +333,34 @@ const MapPage = ({ weather, visible = true, initialRoute, onRouteShown }) => {
     const maxRank = rankLimit(zoom);
     const center = map.getCenter();
 
-    const visible = CITIES.filter((c) => c.r <= maxRank && bounds.contains([c.lat, c.lon]))
+    // Named curated cities in view (world-city pills, shown at every zoom).
+    const named = CITIES.filter((c) => c.r <= maxRank && bounds.contains([c.lat, c.lon])).map((c) => ({
+      key: c.n,
+      name: c.n,
+      lat: c.lat,
+      lon: c.lon,
+    }));
+
+    // Zoomed into a city/region: the curated list is too sparse to fill the
+    // screen, so scatter unnamed sample points across the viewport.
+    let points = named;
+    if (zoom >= LOCAL_ZOOM) {
+      const spanLat = bounds.getNorth() - bounds.getSouth();
+      const spanLon = bounds.getEast() - bounds.getWest();
+      const scattered = scatterPoints(bounds, SAMPLE_COUNT)
+        // A named city already sitting on this spot covers it — skip the
+        // duplicate call.
+        .filter(
+          (p) =>
+            !named.some(
+              (c) => Math.abs(c.lat - p.lat) < spanLat * 0.08 && Math.abs(c.lon - p.lon) < spanLon * 0.08
+            )
+        )
+        .map((p) => ({ key: cacheKey(p.lat, p.lon), name: null, lat: p.lat, lon: p.lon }));
+      points = named.concat(scattered);
+    }
+
+    const visible = points
       .sort(
         (a, b) =>
           (a.lat - center.lat) ** 2 + (a.lon - center.lng) ** 2 - ((b.lat - center.lat) ** 2 + (b.lon - center.lng) ** 2)
@@ -234,18 +368,18 @@ const MapPage = ({ weather, visible = true, initialRoute, onRouteShown }) => {
       .slice(0, MAX_VISIBLE_CITIES);
 
     const results = await Promise.all(
-      visible.map(async (c) => {
-        const hit = cityCache.current.get(c.n);
-        if (hit && Date.now() - hit.at < CITY_CACHE_MS) return [c.n, hit.wx];
+      visible.map(async (p) => {
+        const hit = cityCache.current.get(p.key);
+        if (hit && Date.now() - hit.at < CITY_CACHE_MS) return [p.key, { ...hit.wx, name: p.name, lat: p.lat, lon: p.lon }];
         try {
-          const data = await fetchCurrent(`${c.lat},${c.lon}`);
+          const data = await fetchCurrent(`${p.lat},${p.lon}`);
           const wx = {
             temp: Math.round(data.current.temp_c),
             cond: data.current.condition.text,
             isDay: data.current.is_day,
           };
-          cityCache.current.set(c.n, { at: Date.now(), wx });
-          return [c.n, wx];
+          cityCache.current.set(p.key, { at: Date.now(), wx });
+          return [p.key, { ...wx, name: p.name, lat: p.lat, lon: p.lon }];
         } catch {
           return null;
         }
@@ -278,23 +412,29 @@ const MapPage = ({ weather, visible = true, initialRoute, onRouteShown }) => {
     if (!ready || !L || !layer) return;
     layer.clearLayers();
 
-    Object.entries(cityWx).forEach(([name, wx]) => {
-      const city = CITIES.find((c) => c.n === name);
-      if (!city) return;
+    Object.values(cityWx).forEach((wx) => {
       const cls = classify(wx.cond, wx.isDay);
-      const html = `
-        <div style="display:flex;align-items:center;gap:5px;padding:3px 9px 3px 6px;border-radius:9999px;
-          background:${cls.event ? cls.bg : 'rgba(23,26,31,0.92)'};
-          border:1px solid ${cls.event ? 'rgba(255,255,255,0.35)' : 'rgba(255,255,255,0.14)'};
-          box-shadow:0 4px 14px rgba(0,0,0,0.45);white-space:nowrap;
-          font:600 11px Montserrat,system-ui,sans-serif;color:#fff;">
-          <span style="font-size:13px;line-height:1">${cls.emoji}</span>${wx.temp}°
-        </div>`;
-      const marker = L.marker([city.lat, city.lon], {
-        icon: L.divIcon({ className: '', html, iconSize: null, iconAnchor: [24, 12] }),
+      // Named (curated) cities always get the temperature pill. Unnamed scatter
+      // points — the local sampling used once you're zoomed into a city — only
+      // render when they're an actual weather event; a dry point there is the
+      // default and would just repeat itself a dozen times over one city.
+      if (!wx.name && !cls.event) return;
+
+      const style = `--zen:${cls.bg};--zen-light:${cls.light}`;
+      const marker = L.marker([wx.lat, wx.lon], {
+        icon: L.divIcon({
+          className: '',
+          html: wx.name
+            ? `<div class="zen-pill${cls.event ? ' zen-live' : ''}" style="${style}">
+                 <span class="zen-emoji">${cls.emoji}</span>${wx.temp}°
+               </div>`
+            : `<div class="zen-blob" style="${style}">${cls.emoji}</div>`,
+          iconSize: null,
+          iconAnchor: wx.name ? [26, 14] : [16, 16],
+        }),
         zIndexOffset: cls.event ? 500 : 0,
       });
-      marker.on('click', () => detailRef.current?.({ name, lat: city.lat, lon: city.lon }));
+      marker.on('click', () => detailRef.current?.({ name: wx.name, lat: wx.lat, lon: wx.lon }));
       marker.addTo(layer);
     });
   }, [ready, cityWx]);
@@ -340,6 +480,22 @@ const MapPage = ({ weather, visible = true, initialRoute, onRouteShown }) => {
     openDetail(place);
   };
 
+  // A pasted Google Maps link is an exact spot — no geocoding, no guessing. It's
+  // the escape hatch for everything the geocoders don't index: a new café, a
+  // dropped pin, a friend's shared location.
+  const resolveInput = async (text) => {
+    const url = parseMapsUrl(text);
+    if (!url) return null;
+    const pin = await resolveMapsUrl(url);
+    if (!pin) {
+      setError(
+        "I couldn't read a location out of that link. Open it in Google Maps, then copy the URL from the address bar — the one with coordinates in it."
+      );
+      return { failed: true };
+    }
+    return pin;
+  };
+
   const handleExplore = async (e) => {
     e.preventDefault();
     const text = q.trim();
@@ -347,8 +503,12 @@ const MapPage = ({ weather, visible = true, initialRoute, onRouteShown }) => {
     setBusy(true);
     setError('');
     try {
-      const list = await geocodeCandidates(text, mapCenter());
-      if (!list.length) return setError(`Couldn't find “${text}”.`);
+      const pin = await resolveInput(text);
+      if (pin?.failed) return; // resolveInput already explained what went wrong
+      if (pin) return selectPlace(pin);
+
+      const list = await geocodeCandidates(text, mapCenter(), SEARCH_RESULTS);
+      if (!list.length) return setError(NOT_FOUND(text));
       if (list.length === 1) return selectPlace(list[0]);
       setCands({ kind: 'explore', list });
     } finally {
@@ -385,17 +545,29 @@ const MapPage = ({ weather, visible = true, initialRoute, onRouteShown }) => {
     setBusy(true);
     setError('');
     try {
-      const here = mapCenter();
-      const originLoc = originText.trim()
-        ? await geocode(originText.trim(), here)
-        : weather && Number.isFinite(weather.lat)
-        ? { name: weather.city, lat: weather.lat, lon: weather.lon }
-        : null;
+      const originQ = originText.trim();
+      // Either endpoint can be a pasted link.
+      const originPin = originQ ? await resolveInput(originQ) : null;
+      if (originPin?.failed) return;
+      const originLoc =
+        originPin ||
+        (originQ
+          ? await geocode(originQ, mapCenter())
+          : weather && Number.isFinite(weather.lat)
+          ? { name: weather.city, lat: weather.lat, lon: weather.lon }
+          : null);
       if (!originLoc) {
-        return setError(originText.trim() ? `Couldn't find “${originText}”.` : 'Type a starting point (or search a city on the Weather page first).');
+        return setError(
+          originQ ? NOT_FOUND(originQ) : 'Type a starting point (or search a city on the Weather page first).'
+        );
       }
-      const list = await geocodeCandidates(destQ, originLoc);
-      if (!list.length) return setError(`Couldn't find “${destQ}”.`);
+
+      const destPin = await resolveInput(destQ);
+      if (destPin?.failed) return;
+      if (destPin) return await runRoute(originLoc, destPin);
+
+      const list = await geocodeCandidates(destQ, originLoc, SEARCH_RESULTS);
+      if (!list.length) return setError(NOT_FOUND(destQ));
       if (list.length === 1) return await runRoute(originLoc, list[0]);
       setCands({ kind: 'dest', list, origin: originLoc });
     } finally {
@@ -489,13 +661,13 @@ const MapPage = ({ weather, visible = true, initialRoute, onRouteShown }) => {
 
       {!ready && (
         <div className="absolute inset-0 z-10 flex items-center justify-center">
-          <Loader2 size={28} className="animate-spin text-white/60" />
+          <Loader2 size={28} className="animate-spin text-ink/60" />
         </div>
       )}
 
       {/* ---------- search / directions panel ---------- */}
       <div className="absolute left-3 top-3 z-20 w-[min(340px,calc(100%-1.5rem))]">
-        <div className="overflow-hidden rounded-2xl border border-white/10 bg-neutral-900/90 shadow-2xl backdrop-blur-xl">
+        <div className="overflow-hidden rounded-2xl border border-ink/10 bg-panel/90 shadow-2xl backdrop-blur-xl">
           {/* mode tabs */}
           <div className="flex gap-1 p-2 pb-0">
             {[
@@ -510,7 +682,7 @@ const MapPage = ({ weather, visible = true, initialRoute, onRouteShown }) => {
                   setError('');
                 }}
                 className={`flex flex-1 items-center justify-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium transition ${
-                  mode === id ? 'bg-white/15 text-white' : 'text-white/50 hover:bg-white/5 hover:text-white/80'
+                  mode === id ? 'bg-ink/15 text-ink' : 'text-ink/50 hover:bg-ink/5 hover:text-ink/80'
                 }`}
               >
                 <Icon size={13} /> {label}
@@ -523,44 +695,44 @@ const MapPage = ({ weather, visible = true, initialRoute, onRouteShown }) => {
               <input
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
-                placeholder="Search a place…"
-                className="w-full rounded-xl bg-white/5 px-3 py-2 text-base text-white placeholder-white/40 outline-none sm:text-sm"
+                placeholder="Search a place or paste a Maps link…"
+                className="w-full rounded-xl bg-ink/5 px-3 py-2 text-base text-ink placeholder-ink/40 outline-none sm:text-sm"
               />
               <button
                 type="submit"
                 disabled={busy}
                 aria-label="Search"
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white text-slate-900 transition-transform active:scale-95 disabled:opacity-50"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-accent text-accentFg transition-transform active:scale-95 disabled:opacity-50"
               >
                 {busy ? <Loader2 size={15} className="animate-spin" /> : <Search size={15} />}
               </button>
             </form>
           ) : (
             <form onSubmit={handleDirections} className="space-y-2 p-2">
-              <div className="flex items-center gap-2 rounded-xl bg-white/5 px-3">
+              <div className="flex items-center gap-2 rounded-xl bg-ink/5 px-3">
                 <MapPin size={13} className="shrink-0 text-sky-300" />
                 <input
                   value={originText}
                   onChange={(e) => setOriginText(e.target.value)}
                   placeholder={weather ? `From: ${weather.city}` : 'From…'}
-                  className="w-full bg-transparent py-2 text-base text-white placeholder-white/40 outline-none sm:text-sm"
+                  className="w-full bg-transparent py-2 text-base text-ink placeholder-ink/40 outline-none sm:text-sm"
                 />
               </div>
               <div className="flex items-center gap-2">
-                <div className="flex flex-1 items-center gap-2 rounded-xl bg-white/5 px-3">
+                <div className="flex flex-1 items-center gap-2 rounded-xl bg-ink/5 px-3">
                   <Flag size={13} className="shrink-0 text-orange-300" />
                   <input
                     value={destText}
                     onChange={(e) => setDestText(e.target.value)}
-                    placeholder="To…"
-                    className="w-full bg-transparent py-2 text-base text-white placeholder-white/40 outline-none sm:text-sm"
+                    placeholder="To… (or a Maps link)"
+                    className="w-full bg-transparent py-2 text-base text-ink placeholder-ink/40 outline-none sm:text-sm"
                   />
                 </div>
                 <button
                   type="submit"
                   disabled={busy}
                   aria-label="Find route"
-                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white text-slate-900 transition-transform active:scale-95 disabled:opacity-50"
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-accent text-accentFg transition-transform active:scale-95 disabled:opacity-50"
                 >
                   {busy ? <Loader2 size={15} className="animate-spin" /> : <Navigation size={15} />}
                 </button>
@@ -572,18 +744,18 @@ const MapPage = ({ weather, visible = true, initialRoute, onRouteShown }) => {
 
           {/* geocode candidates — “which one did you mean?” */}
           {cands && (
-            <div className="max-h-52 space-y-1 overflow-y-auto border-t border-white/10 p-2">
+            <div className="max-h-[19rem] space-y-1 overflow-y-auto border-t border-ink/10 p-2">
               {cands.list.map((c) => (
                 <button
                   key={`${c.lat},${c.lon}`}
                   onClick={() => (cands.kind === 'explore' ? selectPlace(c) : runRoute(cands.origin, c))}
-                  className="flex w-full items-start gap-2 rounded-xl px-2.5 py-2 text-left text-xs text-white/75 transition hover:bg-white/10 hover:text-white"
+                  className="flex w-full items-start gap-2 rounded-xl px-2.5 py-2 text-left text-xs text-ink/75 transition hover:bg-ink/10 hover:text-ink"
                 >
-                  <MapPin size={13} className="mt-0.5 shrink-0 text-white/35" />
+                  <MapPin size={13} className="mt-0.5 shrink-0 text-ink/35" />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate font-medium">{c.name}</span>
                     {c.label && c.label !== c.name && (
-                      <span className="block truncate text-white/45">{c.label}</span>
+                      <span className="block truncate text-ink/45">{c.label}</span>
                     )}
                   </span>
                 </button>
@@ -594,17 +766,17 @@ const MapPage = ({ weather, visible = true, initialRoute, onRouteShown }) => {
 
         {/* route options — like Google Maps' alternatives list */}
         {route && (
-          <div className="mt-2 overflow-hidden rounded-2xl border border-white/10 bg-neutral-900/90 shadow-2xl backdrop-blur-xl">
-            <div className="flex items-center gap-2 px-3 py-2 text-xs text-white/70">
+          <div className="mt-2 overflow-hidden rounded-2xl border border-ink/10 bg-panel/90 shadow-2xl backdrop-blur-xl">
+            <div className="flex items-center gap-2 px-3 py-2 text-xs text-ink/70">
               <MapPin size={13} className="shrink-0 text-sky-300" />
               <span className="truncate">{route.origin.name}</span>
-              <span className="text-white/30">→</span>
+              <span className="text-ink/30">→</span>
               <Flag size={13} className="shrink-0 text-orange-300" />
               <span className="truncate">{route.dest.name}</span>
               <button
                 onClick={clearRoute}
                 aria-label="Clear route"
-                className="ml-auto flex h-6 w-6 shrink-0 items-center justify-center rounded-lg text-white/50 hover:bg-white/10 hover:text-white"
+                className="ml-auto flex h-6 w-6 shrink-0 items-center justify-center rounded-lg text-ink/50 hover:bg-ink/10 hover:text-ink"
               >
                 <X size={13} />
               </button>
@@ -619,7 +791,7 @@ const MapPage = ({ weather, visible = true, initialRoute, onRouteShown }) => {
                     onClick={() => setSelRoute(i)}
                     aria-pressed={isSel}
                     className={`flex w-full items-center gap-2 rounded-xl px-2.5 py-1.5 text-left text-xs transition ${
-                      isSel ? 'bg-white/10 text-white' : 'text-white/55 hover:bg-white/5 hover:text-white/80'
+                      isSel ? 'bg-ink/10 text-ink' : 'text-ink/55 hover:bg-ink/5 hover:text-ink/80'
                     }`}
                   >
                     <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: isSel ? lv.color : '#94a3b8' }} />
@@ -639,7 +811,7 @@ const MapPage = ({ weather, visible = true, initialRoute, onRouteShown }) => {
                 );
               })}
               {legend.length > 1 && (
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-1 pt-1 text-[10px] text-white/45">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-1 pt-1 text-[10px] text-ink/45">
                   <span>Along the road:</span>
                   {legend.map((l) => (
                     <span key={l} className="flex items-center gap-1">
@@ -650,7 +822,7 @@ const MapPage = ({ weather, visible = true, initialRoute, onRouteShown }) => {
                 </div>
               )}
               {shown?.arriveAt && (
-                <p className="px-1 pb-1 text-[10px] text-white/40">
+                <p className="px-1 pb-1 text-[10px] text-ink/40">
                   Leaving now, arriving ~
                   {new Date(shown.arriveAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })} · times
                   exclude live traffic
@@ -666,8 +838,8 @@ const MapPage = ({ weather, visible = true, initialRoute, onRouteShown }) => {
         <button
           onClick={() => setRadarOn((r) => !r)}
           title={radarOn ? 'Hide rain radar' : 'Show rain radar'}
-          className={`flex h-10 w-10 items-center justify-center rounded-xl border border-white/10 shadow-xl backdrop-blur-xl transition ${
-            radarOn ? 'bg-sky-500/80 text-white' : 'bg-neutral-900/90 text-white/60 hover:text-white'
+          className={`flex h-10 w-10 items-center justify-center rounded-xl border border-ink/10 shadow-xl backdrop-blur-xl transition ${
+            radarOn ? 'bg-sky-500/80 text-white' : 'bg-panel/90 text-ink/60 hover:text-ink'
           }`}
         >
           <CloudRain size={17} />
@@ -675,7 +847,7 @@ const MapPage = ({ weather, visible = true, initialRoute, onRouteShown }) => {
         <button
           onClick={locate}
           title="My location"
-          className="flex h-10 w-10 items-center justify-center rounded-xl border border-white/10 bg-neutral-900/90 text-white/60 shadow-xl backdrop-blur-xl transition hover:text-white"
+          className="flex h-10 w-10 items-center justify-center rounded-xl border border-ink/10 bg-panel/90 text-ink/60 shadow-xl backdrop-blur-xl transition hover:text-ink"
         >
           <Crosshair size={17} />
         </button>
@@ -684,15 +856,15 @@ const MapPage = ({ weather, visible = true, initialRoute, onRouteShown }) => {
       {/* ---------- weather detail panel ---------- */}
       {detail && (
         <div className="absolute bottom-0 left-0 right-0 z-20 sm:bottom-auto sm:left-auto sm:right-3 sm:top-16 sm:w-80">
-          <div className="rounded-t-2xl border border-white/10 bg-neutral-900/95 p-4 shadow-2xl backdrop-blur-xl sm:rounded-2xl">
+          <div className="rounded-t-2xl border border-ink/10 bg-panel/95 p-4 shadow-2xl backdrop-blur-xl sm:rounded-2xl">
             {detail.loading ? (
               <div className="flex items-center justify-center py-8">
-                <Loader2 size={22} className="animate-spin text-white/60" />
+                <Loader2 size={22} className="animate-spin text-ink/60" />
               </div>
             ) : !detail.wx ? (
               <div className="flex items-start justify-between gap-2">
-                <p className="text-sm text-white/70">Couldn't load weather for this spot.</p>
-                <button onClick={closeDetail} aria-label="Close" className="text-white/50 hover:text-white">
+                <p className="text-sm text-ink/70">Couldn't load weather for this spot.</p>
+                <button onClick={closeDetail} aria-label="Close" className="text-ink/50 hover:text-ink">
                   <X size={16} />
                 </button>
               </div>
@@ -700,10 +872,10 @@ const MapPage = ({ weather, visible = true, initialRoute, onRouteShown }) => {
               <>
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
-                    <h3 className="truncate text-base font-semibold text-white">{detail.place.name}</h3>
-                    <p className="truncate text-[11px] text-white/45">{detail.wx.region}</p>
+                    <h3 className="truncate text-base font-semibold text-ink">{detail.place.name}</h3>
+                    <p className="truncate text-[11px] text-ink/45">{detail.wx.region}</p>
                   </div>
-                  <button onClick={closeDetail} aria-label="Close" className="shrink-0 text-white/50 hover:text-white">
+                  <button onClick={closeDetail} aria-label="Close" className="shrink-0 text-ink/50 hover:text-ink">
                     <X size={16} />
                   </button>
                 </div>
@@ -711,28 +883,28 @@ const MapPage = ({ weather, visible = true, initialRoute, onRouteShown }) => {
                 <div className="mt-3 flex items-center gap-3">
                   {getWeatherIcon(detail.wx.cond, 40, detail.wx.isDay)}
                   <div>
-                    <div className="text-3xl font-semibold text-white">{detail.wx.temp}°</div>
-                    <div className="text-xs text-white/55">
+                    <div className="text-3xl font-semibold text-ink">{detail.wx.temp}°</div>
+                    <div className="text-xs text-ink/55">
                       {detail.wx.cond} · feels {detail.wx.feels}°
                     </div>
                   </div>
                   {detail.wx.high != null && (
-                    <div className="ml-auto text-right text-xs text-white/55">
+                    <div className="ml-auto text-right text-xs text-ink/55">
                       H {detail.wx.high}° <br /> L {detail.wx.low}°
                     </div>
                   )}
                 </div>
 
-                <div className="mt-3 grid grid-cols-3 gap-2 text-center text-[11px] text-white/70">
-                  <div className="rounded-xl bg-white/5 px-2 py-1.5">
+                <div className="mt-3 grid grid-cols-3 gap-2 text-center text-[11px] text-ink/70">
+                  <div className="rounded-xl bg-ink/5 px-2 py-1.5">
                     <Umbrella size={12} className="mx-auto mb-0.5 opacity-70" />
                     {detail.wx.rainChance}% rain
                   </div>
-                  <div className="rounded-xl bg-white/5 px-2 py-1.5">
+                  <div className="rounded-xl bg-ink/5 px-2 py-1.5">
                     <Wind size={12} className="mx-auto mb-0.5 opacity-70" />
                     {detail.wx.wind} km/h
                   </div>
-                  <div className="rounded-xl bg-white/5 px-2 py-1.5">
+                  <div className="rounded-xl bg-ink/5 px-2 py-1.5">
                     <Droplets size={12} className="mx-auto mb-0.5 opacity-70" />
                     {detail.wx.humidity}%
                   </div>
@@ -741,10 +913,10 @@ const MapPage = ({ weather, visible = true, initialRoute, onRouteShown }) => {
                 {detail.wx.hours.length > 0 && (
                   <div className="no-scrollbar mt-3 flex gap-2 overflow-x-auto">
                     {detail.wx.hours.map((h) => (
-                      <div key={h.time} className="flex shrink-0 flex-col items-center gap-0.5 rounded-xl bg-white/5 px-2.5 py-1.5">
-                        <span className="text-[10px] text-white/45">{h.time}</span>
+                      <div key={h.time} className="flex shrink-0 flex-col items-center gap-0.5 rounded-xl bg-ink/5 px-2.5 py-1.5">
+                        <span className="text-[10px] text-ink/45">{h.time}</span>
                         {getWeatherIcon(h.cond, 16, h.isDay)}
-                        <span className="text-[11px] font-medium text-white">{h.temp}°</span>
+                        <span className="text-[11px] font-medium text-ink">{h.temp}°</span>
                         <span className="text-[9px] text-sky-300/80">{h.rain}%</span>
                       </div>
                     ))}
@@ -763,7 +935,7 @@ const MapPage = ({ weather, visible = true, initialRoute, onRouteShown }) => {
                     if (origin) runRoute(origin, dest);
                     else setError('Type a starting point to route here.');
                   }}
-                  className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-slate-900 transition-transform active:scale-[0.98]"
+                  className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-xl bg-accent px-3 py-2 text-xs font-semibold text-accentFg transition-transform active:scale-[0.98]"
                 >
                   <Navigation size={13} /> Route here — check rain on the way
                 </button>
@@ -773,13 +945,30 @@ const MapPage = ({ weather, visible = true, initialRoute, onRouteShown }) => {
         </div>
       )}
 
-      {/* ---------- legend ---------- */}
-      <div className="absolute bottom-3 left-3 z-10 hidden items-center gap-3 rounded-full border border-white/10 bg-neutral-900/85 px-3 py-1.5 text-[10px] text-white/55 backdrop-blur-xl sm:flex">
-        <span className="flex items-center gap-1"><span>🌧️</span> Raining</span>
-        <span className="flex items-center gap-1"><span>⛈️</span> Storm</span>
-        <span className="flex items-center gap-1"><span>🌨️</span> Snow</span>
+      {/* ---------- legend ----------
+          Hue = weather family, depth = intensity. */}
+      <div className="absolute bottom-3 left-3 z-10 hidden items-center gap-3 rounded-full border border-ink/10 bg-panel/85 px-3 py-1.5 text-[10px] text-ink/55 backdrop-blur-xl sm:flex">
+        <span className="flex items-center gap-1.5">
+          <span
+            className="inline-block h-2 w-8 rounded-full"
+            style={{ background: `linear-gradient(90deg,${S.drizzle.bg},${S.rainLight.bg},${S.rain.bg},${S.rainHeavy.bg})` }}
+          />
+          Drizzle → downpour
+        </span>
         <span className="flex items-center gap-1">
-          <span className="inline-block h-1.5 w-4 rounded-full" style={{ background: 'linear-gradient(90deg,#22c55e,#eab308,#ef4444)' }} />
+          <span className="inline-block h-2 w-2 rounded-full" style={{ background: S.thunder.bg }} /> Storm
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="inline-block h-2 w-2 rounded-full" style={{ background: S.snow.bg }} /> Snow / ice
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="inline-block h-2 w-2 rounded-full" style={{ background: S.fog.bg }} /> Fog
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span
+            className="inline-block h-1.5 w-6 rounded-full"
+            style={{ background: `linear-gradient(90deg,${LEVEL.dry.color},${LEVEL.light.color},${LEVEL.wet.color})` }}
+          />
           Route rain
         </span>
       </div>

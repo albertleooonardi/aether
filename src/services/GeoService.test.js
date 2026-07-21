@@ -107,4 +107,70 @@ describe('geocodeCandidates', () => {
 
     expect(await geocodeCandidates('zzzz nowhere zzzz', null)).toEqual([]);
   });
+
+  // A source returning *something* used to end the search, so a thin proxy reply
+  // hid everything the other geocoders knew about.
+  test('keeps asking further sources until the list is full', async () => {
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          candidates: [{ name: 'Grand Indonesia Shopping Town', label: 'a', lat: -6.1958, lon: 106.8215 }],
+        }),
+      })
+      .mockResolvedValueOnce(
+        photon([feat('Grand Boutique Centre', -6.14, 106.84), feat('Grand Duta City', -6.1649, 107.0212)])
+      );
+
+    const out = await geocodeCandidates('Grand Indonesia', null, 5);
+    expect(out.map((c) => c.name)).toEqual([
+      'Grand Indonesia Shopping Town', // proxy first — its ranking stays on top
+      'Grand Boutique Centre',
+      'Grand Duta City',
+    ]);
+  });
+
+  test('a place the first source already covers costs only one request', async () => {
+    global.fetch = jest.fn().mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        candidates: [
+          { name: 'A', label: 'a', lat: -6.1, lon: 106.1 },
+          { name: 'B', label: 'b', lat: -6.2, lon: 106.2 },
+        ],
+      }),
+    });
+
+    expect(await geocodeCandidates('somewhere', null, 2)).toHaveLength(2);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  // Distance clustering keeps these — they're kilometres apart — but two rows
+  // reading identically give the user nothing to choose between.
+  test('collapses entries whose label is identical, however far apart', async () => {
+    global.fetch = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('backend down'))
+      .mockResolvedValueOnce(
+        photon([feat('Grand Orchard', -6.14, 106.86), feat('Grand Orchard', -6.21, 106.79)])
+      );
+
+    const out = await geocodeCandidates('Grand Orchard', null, 6);
+    expect(out).toHaveLength(1);
+  });
+
+  test('deduping spans sources, so the same place from two geocoders appears once', async () => {
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ candidates: [{ name: 'Monas', label: 'a', lat: -6.1754, lon: 106.8272 }] }),
+      })
+      .mockResolvedValueOnce(photon([feat('Monumen Nasional', -6.1755, 106.8273)]));
+
+    const out = await geocodeCandidates('Monas', null, 6);
+    expect(out).toHaveLength(1);
+    expect(out[0].name).toBe('Monas');
+  });
 });

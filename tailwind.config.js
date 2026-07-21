@@ -5,6 +5,26 @@ module.exports = {
   ],
   theme: {
     extend: {
+      /*
+       * Semantic palette. Every value is a CSS variable holding an "R G B"
+       * triple, set per theme in index.css — so `text-ink/60` or `bg-panel/90`
+       * keeps working with Tailwind's alpha syntax while flipping with the
+       * theme. Components should reach for these, never a literal white/slate:
+       *   ink        — primary foreground (white on dark, near-black on light)
+       *   page       — app background
+       *   surface    — card surface (.glass)
+       *   panel      — floating overlays: chat sheet, map controls
+       *   accent     — the inverted call-to-action button…
+       *   accentFg   — …and the text that sits on it
+       */
+      colors: {
+        ink: 'rgb(var(--ink) / <alpha-value>)',
+        page: 'rgb(var(--page) / <alpha-value>)',
+        surface: 'rgb(var(--surface) / <alpha-value>)',
+        panel: 'rgb(var(--panel) / <alpha-value>)',
+        accent: 'rgb(var(--accent) / <alpha-value>)',
+        accentFg: 'rgb(var(--accent-fg) / <alpha-value>)',
+      },
       backgroundImage: {
         'gradient-radial': 'radial-gradient(circle at center, var(--tw-gradient-stops))',
       },

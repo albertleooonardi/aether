@@ -1,11 +1,13 @@
 import React from 'react';
 
 const Shimmer = ({ className = '' }) => (
+  // The sweep is drawn in `ink` so it stays visible in both themes — a white
+  // shimmer would disappear entirely against a light placeholder.
   <div
-    className={`overflow-hidden rounded-xl bg-white/10 ${className}`}
+    className={`overflow-hidden rounded-xl bg-ink/10 ${className}`}
     style={{
       backgroundImage:
-        'linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.18) 50%, rgba(255,255,255,0) 100%)',
+        'linear-gradient(90deg, rgb(var(--ink) / 0) 0%, rgb(var(--ink) / 0.18) 50%, rgb(var(--ink) / 0) 100%)',
       backgroundSize: '500px 100%',
       backgroundRepeat: 'no-repeat',
     }}

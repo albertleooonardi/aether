@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Loader2, CloudSun, Map as MapIcon } from 'lucide-react';
+import { Loader2, CloudSun, Map as MapIcon, Sun, Moon } from 'lucide-react';
 import Logo from './components/Logo';
+import { useTheme } from './utils/useTheme';
 import MapPage from './components/map/MapPage';
 import SearchBar from './components/SearchBar';
 import WeatherCard from './components/WeatherCard';
@@ -24,6 +25,7 @@ const App = () => {
   const [loading, setLoading] = useState(false);
   const [locating, setLocating] = useState(false);
   const [error, setError] = useState('');
+  const { theme, toggle, isDark } = useTheme();
   const [view, setView] = useState('weather'); // 'weather' | 'map'
   // Mount the map on first visit, then keep it alive across tab switches so
   // pan/zoom/routes survive; hiding is done with CSS.
@@ -178,14 +180,14 @@ const App = () => {
   };
 
   return (
-    <div className="relative min-h-screen overflow-hidden" style={{ background: '#181C21' }}>
+    <div className="relative min-h-screen overflow-hidden bg-page transition-colors duration-300">
       <WeatherAnimations weather={weather} />
 
       <div className="relative z-10 mx-auto w-full max-w-[1800px] px-4 py-5 md:px-8 md:py-6 lg:px-12">
         {/* Brand + view switch */}
         <header className="mb-5 flex items-center gap-3">
           <Logo size={40} />
-          <span className="text-xl font-semibold tracking-[0.22em] text-white">AETHER</span>
+          <span className="text-xl font-semibold tracking-[0.22em] text-ink">AETHER</span>
 
           <nav className="ml-auto flex gap-1 rounded-2xl glass p-1">
             {[
@@ -197,7 +199,7 @@ const App = () => {
                 onClick={() => setView(id)}
                 aria-pressed={view === id}
                 className={`flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium transition ${
-                  view === id ? 'bg-white text-slate-900' : 'text-white/60 hover:bg-white/10 hover:text-white'
+                  view === id ? 'bg-accent text-accentFg' : 'text-ink/60 hover:bg-ink/10 hover:text-ink'
                 }`}
               >
                 <Icon size={14} />
@@ -205,6 +207,15 @@ const App = () => {
               </button>
             ))}
           </nav>
+
+          <button
+            onClick={toggle}
+            aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+            title={isDark ? 'Light mode' : 'Dark mode'}
+            className="flex h-10 w-10 items-center justify-center rounded-2xl glass text-ink/60 transition hover:text-ink"
+          >
+            {isDark ? <Sun size={16} /> : <Moon size={16} />}
+          </button>
         </header>
 
         {error && view === 'weather' && <ErrorMessage message={error} />}
@@ -213,6 +224,7 @@ const App = () => {
           <div className={view === 'map' ? '' : 'hidden'}>
             <MapPage
               weather={weather}
+              theme={theme}
               visible={view === 'map'}
               initialRoute={chatRoute}
               onRouteShown={() => setChatRoute(null)}
@@ -236,7 +248,7 @@ const App = () => {
 
             {loading && (
               <div className="flex flex-1 items-center justify-center rounded-3xl glass py-20">
-                <Loader2 size={28} className="animate-spin text-white/70" />
+                <Loader2 size={28} className="animate-spin text-ink/70" />
               </div>
             )}
 
@@ -257,7 +269,7 @@ const App = () => {
 
           {loading && (
             <div className="hidden items-center justify-center rounded-3xl glass lg:col-span-3 lg:flex">
-              <Loader2 size={28} className="animate-spin text-white/60" />
+              <Loader2 size={28} className="animate-spin text-ink/60" />
             </div>
           )}
         </div>

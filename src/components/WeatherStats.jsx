@@ -16,16 +16,16 @@ const StatBox = ({ icon: Icon, label, value, unit, hint }) => (
     title={hint}
     className="flex items-center gap-2.5 rounded-2xl glass glass-hover p-3"
   >
-    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/10">
-      <Icon size={15} className="text-white/75" />
+    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-ink/10">
+      <Icon size={15} className="text-ink/75" />
     </span>
     <div className="min-w-0">
-      <div className="truncate text-[10px] font-medium uppercase tracking-wide text-white/55">
+      <div className="truncate text-[10px] font-medium uppercase tracking-wide text-ink/55">
         {label}
       </div>
-      <div className="flex items-baseline gap-1 text-white">
+      <div className="flex items-baseline gap-1 text-ink">
         <span className="text-lg font-semibold leading-tight">{value}</span>
-        {unit && <span className="text-[11px] text-white/55">{unit}</span>}
+        {unit && <span className="text-[11px] text-ink/55">{unit}</span>}
       </div>
     </div>
   </div>
@@ -52,11 +52,11 @@ const WeatherStats = ({ weather }) => {
 
       {/* Air quality tile */}
       <div className="flex items-center gap-2.5 rounded-2xl glass glass-hover p-3">
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/10">
-          <Leaf size={15} className="text-white/75" />
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-ink/10">
+          <Leaf size={15} className="text-ink/75" />
         </span>
         <div className="min-w-0">
-          <div className="truncate text-[10px] font-medium uppercase tracking-wide text-white/55">
+          <div className="truncate text-[10px] font-medium uppercase tracking-wide text-ink/55">
             Air quality
           </div>
           <div className="flex items-center gap-1.5">

@@ -4,12 +4,12 @@ import { getWeatherAdvice } from '../utils/ThemeUtils';
 
 const HeroStat = ({ icon: Icon, label, value, sub }) => (
   <div className="flex flex-col rounded-2xl glass-soft glass-hover p-4">
-    <div className="flex items-center gap-2 text-white/55">
+    <div className="flex items-center gap-2 text-ink/55">
       <Icon size={15} />
       <span className="text-[11px] font-medium uppercase tracking-wide">{label}</span>
     </div>
-    <div className="mt-2 text-2xl font-bold text-white">{value}</div>
-    {sub && <div className="mt-1 text-xs leading-snug text-white/55">{sub}</div>}
+    <div className="mt-2 text-2xl font-bold text-ink">{value}</div>
+    {sub && <div className="mt-1 text-xs leading-snug text-ink/55">{sub}</div>}
   </div>
 );
 
@@ -30,8 +30,8 @@ const WeatherCard = ({ weather, className = '' }) => {
   return (
     <div className={`flex flex-col rounded-3xl glass p-4 md:p-5 ${className}`}>
       {/* Location pill */}
-      <div className="flex items-center gap-2 rounded-2xl glass-soft px-4 py-3 text-sm text-white/85">
-        <MapPin size={16} className="shrink-0 text-white/60" />
+      <div className="flex items-center gap-2 rounded-2xl glass-soft px-4 py-3 text-sm text-ink/85">
+        <MapPin size={16} className="shrink-0 text-ink/60" />
         <span className="truncate">
           {weather.city}
           {weather.country ? `, ${weather.country}` : ''}
@@ -40,13 +40,13 @@ const WeatherCard = ({ weather, className = '' }) => {
 
       {/* Hero */}
       <div className="flex flex-1 flex-col items-center justify-center py-8 text-center">
-        <div className="text-7xl font-bold leading-none text-white text-glow md:text-8xl">
+        <div className="text-7xl font-bold leading-none text-ink text-glow md:text-8xl">
           {weather.temp}°
         </div>
-        <div className="mt-3 text-2xl font-semibold capitalize text-white md:text-3xl">
+        <div className="mt-3 text-2xl font-semibold capitalize text-ink md:text-3xl">
           {weather.description}
         </div>
-        <p className="mt-4 max-w-sm text-sm leading-relaxed text-white/70">{summary}</p>
+        <p className="mt-4 max-w-sm text-sm leading-relaxed text-ink/70">{summary}</p>
       </div>
 
       {/* 2×2 stat grid */}

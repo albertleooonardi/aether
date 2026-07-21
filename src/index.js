@@ -3,6 +3,10 @@ import ReactDOM from 'react-dom/client';
 import './index.css';
 import App from './App';
 import reportWebVitals from './reportWebVitals';
+import { initTheme } from './utils/useTheme';
+
+// Before the first paint, so a light-theme user never sees a dark flash.
+initTheme();
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(

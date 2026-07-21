@@ -32,19 +32,19 @@ const UVCard = ({ weather }) => {
 
   return (
     <div className="flex flex-col rounded-3xl glass p-5">
-      <div className="flex items-center justify-between text-white/60">
+      <div className="flex items-center justify-between text-ink/60">
         <div className="flex items-center gap-2">
           <Sun size={16} />
           <span className="text-xs font-semibold uppercase tracking-widest">UV Index</span>
         </div>
         {showPeak && (
-          <span className="text-[11px] text-white/50">Peak {Math.round(max)}</span>
+          <span className="text-[11px] text-ink/50">Peak {Math.round(max)}</span>
         )}
       </div>
 
       <div className="mt-3 flex items-baseline gap-2">
-        <span className="text-4xl font-bold leading-none text-white">{Math.round(current)}</span>
-        <span className="text-sm font-medium text-white/80">{label}</span>
+        <span className="text-4xl font-bold leading-none text-ink">{Math.round(current)}</span>
+        <span className="text-sm font-medium text-ink/80">{label}</span>
       </div>
 
       {/* Scale with current marker (dot) + today's peak marker (tick) */}
@@ -58,19 +58,19 @@ const UVCard = ({ weather }) => {
         />
         {showPeak && (
           <div
-            className="absolute top-1/2 h-4 w-0.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/50"
+            className="absolute top-1/2 h-4 w-0.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-ink/50"
             style={{ left: `${toPct(max)}%` }}
             title={`Today's peak: ${Math.round(max)}`}
           />
         )}
         <div
-          className="absolute top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-white/90 shadow"
+          className="absolute top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-ink bg-ink/90 shadow"
           style={{ left: `${toPct(current)}%` }}
           title={`Now: ${Math.round(current)}`}
         />
       </div>
 
-      <div className="mt-auto pt-4 text-xs text-white/55">{note}</div>
+      <div className="mt-auto pt-4 text-xs text-ink/55">{note}</div>
     </div>
   );
 };

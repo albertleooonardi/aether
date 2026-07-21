@@ -507,15 +507,21 @@ const distanceKm = (a, b) => {
 
 const NEAR_DUPLICATE_KM = 0.4;
 
+// Two entries reading exactly "Grand Orchard, Jakarta, Indonesia" are not a
+// choice the user can make — whatever distinguishes them isn't on screen, so
+// picking is a coin flip. Identical labels collapse no matter how far apart they
+// sit; only the highest-ranked survives.
+const sameLabel = (a, b) => (a.label || a.name || '').toLowerCase() === (b.label || b.name || '').toLowerCase();
+
 const dedupe = (list) =>
   list.reduce((keep, c) => {
-    if (!keep.some((k) => distanceKm(k, c) < NEAR_DUPLICATE_KM)) keep.push(c);
+    if (!keep.some((k) => distanceKm(k, c) < NEAR_DUPLICATE_KM || sameLabel(k, c))) keep.push(c);
     return keep;
   }, []);
 
 async function viaPhoton(q, c) {
   const bias = c ? `&lat=${c.lat}&lon=${c.lon}` : '';
-  const { status, data } = await fetchJSON(`${PHOTON}?q=${encodeURIComponent(q)}&limit=6&lang=en${bias}`, {
+  const { status, data } = await fetchJSON(`${PHOTON}?q=${encodeURIComponent(q)}&limit=20&lang=en${bias}`, {
     'User-Agent': 'AetherAI/1.0 (Aether weather app)',
   });
   if (status !== 200 || !data || !Array.isArray(data.features)) return [];
@@ -532,7 +538,7 @@ async function viaPhoton(q, c) {
 
 async function viaNominatim(q, c) {
   const { status, data } = await fetchJSON(
-    `${NOMINATIM}?q=${encodeURIComponent(q)}&format=json&limit=6${viewboxOf(c)}`,
+    `${NOMINATIM}?q=${encodeURIComponent(q)}&format=json&limit=20${viewboxOf(c)}`,
     { 'User-Agent': 'AetherAI/1.0 (Aether weather app)', Accept: 'application/json' }
   );
   if (status !== 200 || !Array.isArray(data) || !data.length) return [];
@@ -544,18 +550,31 @@ async function viaNominatim(q, c) {
     });
 }
 
-async function geocodeHandler(q, near) {
+// Photon indexes POIs far better, Nominatim is stronger on plain place names —
+// so both are consulted and merged (Photon first, keeping its ranking on top)
+// rather than letting whichever answers first end the search. Dedupe collapses
+// a POI and its own sub-features, so the raw lists are much longer than `limit`.
+const GEOCODE_LIMIT = 10;
+const GEOCODE_MAX = 20;
+
+async function geocodeHandler(q, near, limit) {
   if (!q) return { status: 400, body: { error: 'missing_q' } };
   const c = coords(near);
+  const want = Math.min(Number(limit) || GEOCODE_LIMIT, GEOCODE_MAX);
+
+  const found = [];
   for (const lookup of [viaPhoton, viaNominatim]) {
     try {
-      const list = dedupe(await lookup(q, c)).slice(0, 4);
-      if (list.length) return { status: 200, body: { candidates: list } };
+      found.push(...(await lookup(q, c)));
     } catch {
       /* try the next provider */
     }
+    if (dedupe(found).length >= want) break;
   }
-  return { status: 404, body: { error: 'not_found' } };
+
+  const candidates = dedupe(found).slice(0, want);
+  if (!candidates.length) return { status: 404, body: { error: 'not_found' } };
+  return { status: 200, body: { candidates } };
 }
 
 /* ---------------- Google Maps short links ---------------- */

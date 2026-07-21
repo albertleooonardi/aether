@@ -57,6 +57,6 @@ export const getAirQuality = (index) => {
     case 4: return { label: 'Unhealthy', tone: 'text-orange-200', dot: 'bg-orange-300' };
     case 5: return { label: 'Very unhealthy', tone: 'text-rose-200', dot: 'bg-rose-300' };
     case 6: return { label: 'Hazardous', tone: 'text-fuchsia-200', dot: 'bg-fuchsia-300' };
-    default: return { label: 'Unavailable', tone: 'text-white/60', dot: 'bg-white/40' };
+    default: return { label: 'Unavailable', tone: 'text-ink/60', dot: 'bg-ink/40' };
   }
 };

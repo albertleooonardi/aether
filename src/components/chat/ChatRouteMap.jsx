@@ -139,19 +139,19 @@ const ChatRouteMap = ({ data, onOpenInMap }) => {
   const legend = [...new Set(segmentsOf(shown).map((s) => s.level))];
 
   return (
-    <div className="mt-2 overflow-hidden rounded-2xl border border-white/10 bg-white/5">
+    <div className="mt-2 overflow-hidden rounded-2xl border border-ink/10 bg-ink/5">
       {/* Endpoints */}
-      <div className="flex items-center gap-2 px-3 py-2 text-xs text-white/70">
+      <div className="flex items-center gap-2 px-3 py-2 text-xs text-ink/70">
         <MapPin size={13} className="text-sky-300" />
         <span className="truncate">{data.origin.name}</span>
-        <span className="text-white/30">→</span>
+        <span className="text-ink/30">→</span>
         <Flag size={13} className="text-orange-300" />
         <span className="truncate">{data.dest.name}</span>
         {onOpenInMap && (
           <button
             onClick={() => onOpenInMap(data)}
             title="Open on the full map page"
-            className="ml-auto flex shrink-0 items-center gap-1 rounded-lg bg-white/10 px-2 py-1 text-[10px] font-medium text-white/70 transition hover:bg-white/20 hover:text-white"
+            className="ml-auto flex shrink-0 items-center gap-1 rounded-lg bg-ink/10 px-2 py-1 text-[10px] font-medium text-ink/70 transition hover:bg-ink/20 hover:text-ink"
           >
             <Maximize2 size={11} /> Open in map
           </button>
@@ -173,7 +173,7 @@ const ChatRouteMap = ({ data, onOpenInMap }) => {
               aria-pressed={isSelected}
               onClick={() => setSelected(i)}
               className={`flex w-full items-center gap-2 rounded-xl px-2.5 py-1.5 text-left text-xs transition ${
-                isSelected ? 'bg-white/10 text-white' : 'text-white/55 hover:bg-white/5 hover:text-white/80'
+                isSelected ? 'bg-ink/10 text-ink' : 'text-ink/55 hover:bg-ink/5 hover:text-ink/80'
               }`}
             >
               <span
@@ -198,7 +198,7 @@ const ChatRouteMap = ({ data, onOpenInMap }) => {
 
         {/* What the colours along the drawn line mean. */}
         {legend.length > 1 && (
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-1 text-[10px] text-white/45">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-1 text-[10px] text-ink/45">
             <span>Along the road:</span>
             {legend.map((l) => (
               <span key={l} className="flex items-center gap-1">
@@ -209,7 +209,7 @@ const ChatRouteMap = ({ data, onOpenInMap }) => {
           </div>
         )}
 
-        <p className="pt-1 text-[11px] text-white/45">
+        <p className="pt-1 text-[11px] text-ink/45">
           {shown.rain.level === 'unknown'
             ? 'Could not reach the weather service to check this route.'
             : shown.rain.level === 'dry'
@@ -220,7 +220,7 @@ const ChatRouteMap = ({ data, onOpenInMap }) => {
             <>
               {' '}
               Arriving ~{new Date(shown.arriveAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
-              <span className="text-white/30"> · times exclude live traffic</span>
+              <span className="text-ink/30"> · times exclude live traffic</span>
             </>
           )}
         </p>

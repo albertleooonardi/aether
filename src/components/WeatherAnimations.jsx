@@ -36,7 +36,7 @@ const WeatherAnimations = ({ weather }) => {
     }
 
     return (
-      <div className="fixed inset-0 pointer-events-none overflow-hidden z-0">
+      <div className="wx-fx fixed inset-0 pointer-events-none overflow-hidden z-0">
         {[...Array(dropCount)].map((_, i) => {
           const left = Math.random() * 100;
           const delay = Math.random() * 2;
@@ -65,7 +65,7 @@ const WeatherAnimations = ({ weather }) => {
   };
 
   const SnowAnimation = () => (
-    <div className="fixed inset-0 pointer-events-none overflow-hidden z-0">
+    <div className="wx-fx fixed inset-0 pointer-events-none overflow-hidden z-0">
       {[...Array(50)].map((_, i) => {
         const left = Math.random() * 100;
         const delay = Math.random() * 5;
@@ -76,7 +76,7 @@ const WeatherAnimations = ({ weather }) => {
         return (
           <div
             key={`snow-${i}`}
-            className="absolute bg-white rounded-full"
+            className="absolute bg-ink rounded-full"
             style={{
               left: `${left}%`,
               width: `${size}px`,
@@ -95,7 +95,7 @@ const WeatherAnimations = ({ weather }) => {
   );
 
   const CloudAnimation = () => (
-    <div className="fixed inset-0 pointer-events-none overflow-hidden opacity-20 z-0">
+    <div className="wx-fx fixed inset-0 pointer-events-none overflow-hidden opacity-20 z-0">
       {[...Array(5)].map((_, i) => {
         const top = 10 + Math.random() * 40;
         const delay = i * 4;
@@ -122,7 +122,7 @@ const WeatherAnimations = ({ weather }) => {
   );
 
   const StarsAnimation = () => (
-    <div className="fixed inset-0 pointer-events-none overflow-hidden z-0">
+    <div className="wx-fx fixed inset-0 pointer-events-none overflow-hidden z-0">
       {[...Array(100)].map((_, i) => {
         const left = Math.random() * 100;
         const top = Math.random() * 100;
@@ -133,7 +133,7 @@ const WeatherAnimations = ({ weather }) => {
         return (
           <div
             key={`star-${i}`}
-            className="absolute bg-white rounded-full"
+            className="absolute bg-ink rounded-full"
             style={{
               left: `${left}%`,
               top: `${top}%`,
