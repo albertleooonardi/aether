@@ -1,16 +1,15 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { MessageCircle, X, Send, Bell, Sparkles, Activity } from 'lucide-react';
+import { MessageCircle, X, Send, Bell, Sparkles } from 'lucide-react';
 import { parseReminder, answer, formatClock } from '../../chat/assistant';
 import { parseNavigation, parseWeatherIn, parseMapsUrl, parseFollowUp } from '../../chat/intents';
 import { fetchWeatherByCity } from '../../services/WeatherService';
 import { geocode, geocodeCandidates, resolveMapsUrl } from '../../services/GeoService';
 import { getRoutesWithRain } from '../../services/RouteService';
-import { askAI, checkAI, getUsage } from '../../services/AetherAI';
+import { askAI, checkAI } from '../../services/AetherAI';
 import RichText from './RichText';
 import WeatherReplyCard from './WeatherReplyCard';
 import ChatRouteMap from './ChatRouteMap';
 import PlacePicker from './PlacePicker';
-import UsagePanel from './UsagePanel';
 
 const STORAGE_KEY = 'vrijeme.reminders.v1';
 const loadReminders = () => {
@@ -72,9 +71,6 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
   ]);
   const [reminders, setReminders] = useState(loadReminders);
   const [aiReady, setAiReady] = useState(false);
-  const [showUsage, setShowUsage] = useState(false);
-  const [usage, setUsage] = useState(null);
-  const [activeProvider, setActiveProvider] = useState(null);
   const timers = useRef({});
   const logEnd = useRef(null);
   const weatherRef = useRef(weather);
@@ -391,8 +387,6 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
         history.push({ role: 'user', text });
         const out = await askAI(history, aiContext());
         setAiReady(true);
-        setUsage(out.usage);
-        setActiveProvider(out.provider);
         sayAssistant(out.reply);
       } catch {
         sayAssistant(answer(text, weatherRef.current, reminders, hourlyRef.current, forecastRef.current));
@@ -456,21 +450,6 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
                 <Bell size={12} /> {activeCount}
               </span>
             )}
-            {aiReady && (
-              <button
-                onClick={() => {
-                  setShowUsage((s) => !s);
-                  getUsage().then((u) => u && setUsage(u));
-                }}
-                aria-label="AI usage & models"
-                title="AI usage & models"
-                className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${
-                  showUsage ? 'bg-ink/15 text-ink' : 'text-ink/55 hover:bg-ink/10 hover:text-ink'
-                }`}
-              >
-                <Activity size={16} />
-              </button>
-            )}
             {/* On phones the sheet covers the floating toggle — close lives here. */}
             <button
               onClick={() => setOpen(false)}
@@ -480,8 +459,6 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
               <X size={18} />
             </button>
           </div>
-
-          {showUsage && aiReady && <UsagePanel usage={usage} active={activeProvider} />}
 
           {/* Messages */}
           <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4">

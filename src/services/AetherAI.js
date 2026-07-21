@@ -1,5 +1,7 @@
 // Talks to the AetherAI backend (server/index.js), which holds the AI keys and
-// manages Gemini↔Groq failover + token usage.
+// manages Gemini↔Groq failover + token usage. The backend still tracks and
+// exposes that usage at GET /api/usage for diagnostics; the app no longer
+// surfaces it in the UI.
 // In dev, Create React App proxies /api → http://localhost:3001 (package.json "proxy").
 
 const withTimeout = (ms) => {
@@ -41,18 +43,5 @@ export const checkAI = async () => {
     return !!data.ai;
   } catch {
     return false;
-  }
-};
-
-// Per-provider token usage snapshot for the management panel.
-export const getUsage = async () => {
-  try {
-    const t = withTimeout(4000);
-    const res = await fetch('/api/usage', { signal: t.signal });
-    t.clear();
-    if (!res.ok) return null;
-    return res.json();
-  } catch {
-    return null;
   }
 };
