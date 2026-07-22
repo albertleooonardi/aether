@@ -1,11 +1,11 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { MessageCircle, X, Send, Bell, Sparkles, RotateCw, ChevronDown } from 'lucide-react';
+import { MessageCircle, X, Send, Bell, Sparkles, RotateCw } from 'lucide-react';
 import { parseReminder, answer, formatClock } from '../../chat/assistant';
 import { parseNavigation, parseWeatherIn, parseMapsUrl, parseFollowUp } from '../../chat/intents';
 import { fetchWeatherByCity } from '../../services/WeatherService';
 import { geocode, geocodeCandidates, resolveMapsUrl } from '../../services/GeoService';
 import { getRoutesWithRain } from '../../services/RouteService';
-import { askAI, checkStatus, getProviders } from '../../services/AetherAI';
+import { askAI, checkStatus } from '../../services/AetherAI';
 import RichText from './RichText';
 import WeatherReplyCard from './WeatherReplyCard';
 import ChatRouteMap from './ChatRouteMap';
@@ -73,26 +73,6 @@ const STATUS_NOTE = {
     "Can't reach the assistant backend — on Vercel the /api function may not be deployed. Replies use the built-in rules meanwhile.",
 };
 
-// Which provider is actually serving right now: the primary if it's ready,
-// otherwise the first configured backup — mirrors the backend's failover order.
-const activeProviderId = (info) => {
-  if (!info) return null;
-  const order = info.primary === 'groq' ? ['groq', 'gemini'] : ['gemini', 'groq'];
-  const by = Object.fromEntries(info.providers.map((p) => [p.id, p]));
-  return order.find((id) => by[id]?.configured && by[id]?.available) || null;
-};
-
-// Status pill for one provider row.
-const providerState = (p, activeId) => {
-  if (!p.configured) return { label: 'Not set', dot: 'bg-ink/25', tone: 'text-ink/40' };
-  if (p.exhausted) {
-    const mins = p.cooldownEndsAt ? Math.max(1, Math.round((p.cooldownEndsAt - Date.now()) / 60000)) : null;
-    return { label: mins ? `Rate-limited · ~${mins}m` : 'Rate-limited', dot: 'bg-rose-500', tone: 'text-rose-500' };
-  }
-  if (p.id === activeId) return { label: 'Active', dot: 'bg-emerald-400', tone: 'text-emerald-500' };
-  return { label: 'Standby', dot: 'bg-ink/40', tone: 'text-ink/50' };
-};
-
 const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState('');
@@ -108,9 +88,6 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
   const [reminders, setReminders] = useState(loadReminders);
   // 'checking' | 'online' | 'basic' | 'offline'
   const [status, setStatus] = useState('checking');
-  // Expandable per-provider (Gemini/Groq) status, and its data.
-  const [showProviders, setShowProviders] = useState(false);
-  const [providerInfo, setProviderInfo] = useState(null);
   const timers = useRef({});
   const logEnd = useRef(null);
   const weatherRef = useRef(weather);
@@ -131,15 +108,10 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
   // Poll backend liveness: once on mount, then every 30s while the sheet is open
   // (and immediately each time it opens), so a backend that comes up or goes down
   // on Vercel is reflected without a page reload.
-  const loadProviders = useCallback(() => {
-    getProviders().then(setProviderInfo);
-  }, []);
-
   const probe = useCallback(() => {
     setStatus((s) => (s === 'offline' ? 'checking' : s));
     checkStatus().then((r) => setStatus(r.status));
-    loadProviders();
-  }, [loadProviders]);
+  }, []);
 
   useEffect(() => {
     probe();
@@ -500,23 +472,16 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
             </span>
             <div className="min-w-0 flex-1">
               <div className="text-sm font-semibold leading-tight text-ink">AetherAI</div>
-              {/* Live status — click to expand per-provider (Gemini/Groq) status. */}
+              {/* Live status — click to re-probe (useful when it's Offline). */}
               <button
-                onClick={() => {
-                  setShowProviders((v) => !v);
-                  probe();
-                }}
-                title="Gemini & Groq status"
-                aria-expanded={showProviders}
+                onClick={probe}
+                title="Check connection"
                 className="mt-0.5 flex items-center gap-1.5 text-[11px] transition-opacity hover:opacity-80"
               >
                 <span className={`h-1.5 w-1.5 rounded-full ${meta.dot} ${meta.pulse ? 'animate-pulse' : ''}`} />
                 <span className={`font-medium ${meta.tone}`}>{meta.label}</span>
                 {weather && <span className="truncate text-ink/40">· {weather.city} {weather.temp}°</span>}
-                <ChevronDown
-                  size={11}
-                  className={`text-ink/40 transition-transform ${showProviders ? 'rotate-180' : ''}`}
-                />
+                {(status === 'offline' || status === 'basic') && <RotateCw size={10} className="text-ink/40" />}
               </button>
             </div>
             {activeCount > 0 && (
@@ -534,59 +499,9 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
             </button>
           </div>
 
-          {/* Per-provider (Gemini / Groq) status, expanded from the header. */}
-          {showProviders && (
-            <div className="border-b border-ink/10 bg-ink/[0.03] px-4 py-3">
-              <div className="mb-2 flex items-center justify-between">
-                <span className="text-[10px] font-semibold uppercase tracking-wide text-ink/40">AI providers</span>
-                <button
-                  onClick={probe}
-                  title="Refresh"
-                  className="flex items-center gap-1 text-[10px] text-ink/45 transition-colors hover:text-ink"
-                >
-                  <RotateCw size={10} /> Refresh
-                </button>
-              </div>
-
-              {status === 'offline' ? (
-                <p className="text-[11px] leading-snug text-rose-500">
-                  Backend unreachable — on Vercel the <span className="font-mono">/api</span> function may not be
-                  deployed. Replies fall back to the built-in rules.
-                </p>
-              ) : !providerInfo ? (
-                <p className="text-[11px] text-ink/45">Checking Gemini and Groq…</p>
-              ) : (
-                <div className="space-y-1.5">
-                  {providerInfo.providers.map((p) => {
-                    const st = providerState(p, activeProviderId(providerInfo));
-                    return (
-                      <div key={p.id} className="flex items-center gap-2">
-                        <span className={`h-2 w-2 shrink-0 rounded-full ${st.dot}`} />
-                        <span className="text-[13px] font-medium text-ink">{p.label}</span>
-                        {p.id === providerInfo.primary && (
-                          <span className="rounded-full bg-ink/10 px-1.5 py-px text-[9px] font-medium text-ink/50">
-                            primary
-                          </span>
-                        )}
-                        <span className="truncate font-mono text-[10px] text-ink/35">{p.model}</span>
-                        <span className={`ml-auto shrink-0 text-[11px] font-medium ${st.tone}`}>{st.label}</span>
-                      </div>
-                    );
-                  })}
-                  {status === 'basic' && (
-                    <p className="pt-1 text-[10px] leading-snug text-amber-500">
-                      No key configured — add GEMINI_API_KEY or GROQ_API_KEY, then Refresh.
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
           {/* When the LLM isn't available, say why and what to do — this is the
-              thing that was impossible to diagnose on Vercel before. Hidden while
-              the provider panel is open, since that already explains it. */}
-          {STATUS_NOTE[status] && !showProviders && (
+              thing that was impossible to diagnose on Vercel before. */}
+          {STATUS_NOTE[status] && (
             <div
               className={`border-b border-ink/10 px-4 py-2 text-[11px] leading-snug ${
                 status === 'offline' ? 'bg-rose-500/10 text-rose-500' : 'bg-amber-400/10 text-amber-500'
