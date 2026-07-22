@@ -14,11 +14,10 @@ import {
   Umbrella,
   Crosshair,
 } from 'lucide-react';
-import CITIES from './cities';
 import { LEVEL, segmentsOf } from '../../utils/RouteLevels';
 import { enableSmoothWheelZoom } from '../../utils/SmoothZoom';
 import { getWeatherIcon } from '../../utils/WeatherIcons';
-import { fetchCurrent, fetchWeatherByCoords } from '../../services/WeatherService';
+import { fetchWeatherByCoords } from '../../services/WeatherService';
 import { geocode, geocodeCandidates, resolveMapsUrl } from '../../services/GeoService';
 import { parseMapsUrl } from '../../chat/intents';
 import { getRoutesWithRain } from '../../services/RouteService';
@@ -36,114 +35,6 @@ const NOT_FOUND = (what) => `Couldn't find “${what}”. Paste a Google Maps li
 // "Zoom Level Not Supported" placeholder image instead of a transparent tile.
 const RADAR_MAX_NATIVE_ZOOM = 7;
 const RAINVIEWER_INDEX = 'https://api.rainviewer.com/public/weather-maps.json';
-
-// One WeatherAPI call per visible point — keep results warm for a while.
-const CITY_CACHE_MS = 10 * 60 * 1000;
-const MAX_VISIBLE_CITIES = 12;
-
-// Below this zoom the curated city list is sparse by design (a world/country
-// view only needs a handful of labelled cities). Past it — zoomed into a single
-// city or region — those curated points are nearly all off-screen, so barely
-// anything would show. From here on the viewport itself is sampled.
-const LOCAL_ZOOM = 6;
-const SAMPLE_COUNT = 10;
-
-// Sample positions follow a golden-angle spiral rather than rows and columns.
-// A grid is instantly readable *as* a grid — the eye locks onto the alignment
-// and the map looks like a survey instead of weather. The spiral spreads points
-// just as evenly by area while never repeating an angle, so it scatters.
-const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
-
-// The spiral is anchored to a snapped centre so small pans reuse the same points
-// (and their cached weather) instead of reshuffling every marker on every nudge.
-const snap = (v, step) => Math.round(v / step) * step;
-
-const scatterPoints = (bounds, n) => {
-  const sw = bounds.getSouthWest();
-  const ne = bounds.getNorthEast();
-  const rLat = (ne.lat - sw.lat) / 2;
-  const rLon = (ne.lng - sw.lng) / 2;
-  const cLat = snap((sw.lat + ne.lat) / 2, rLat / 2);
-  const cLon = snap((sw.lng + ne.lng) / 2, rLon / 2);
-
-  return Array.from({ length: n }, (_, i) => {
-    // sqrt keeps the points area-even instead of bunching at the centre.
-    const t = Math.sqrt((i + 0.5) / n);
-    const a = i * GOLDEN_ANGLE;
-    return {
-      lat: cLat + Math.sin(a) * t * rLat * 0.82,
-      lon: cLon + Math.cos(a) * t * rLon * 0.82,
-    };
-  });
-};
-
-// ~1 km buckets: a slight drift in a sample's position still hits the same cache
-// entry, which is what keeps panning cheap.
-const cacheKey = (lat, lon) => `${lat.toFixed(2)},${lon.toFixed(2)}`;
-
-/* Marker styles. Hue picks the weather *family* (violet storms, blue rain, teal
- * ice, cyan snow, grey cloud, amber sun) and depth within that hue picks the
- * *intensity* — so a glance reads both what and how much. `light` is the
- * highlight the bubble's gradient catches at the top. `event` decides whether an
- * unnamed scatter point is worth drawing at all. */
-const S = {
-  thunderSevere: { key: 'thunderSevere', emoji: '⛈️', bg: '#c026d3', light: '#f0abfc', event: true },
-  thunder: { key: 'thunder', emoji: '🌩️', bg: '#8b5cf6', light: '#c4b5fd', event: true },
-
-  rainHeavy: { key: 'rainHeavy', emoji: '🌧️', bg: '#1d4ed8', light: '#93c5fd', event: true },
-  rain: { key: 'rain', emoji: '🌧️', bg: '#2563eb', light: '#93c5fd', event: true },
-  rainLight: { key: 'rainLight', emoji: '🌦️', bg: '#3b82f6', light: '#bfdbfe', event: true },
-  drizzle: { key: 'drizzle', emoji: '💧', bg: '#38bdf8', light: '#bae6fd', event: true },
-
-  sleet: { key: 'sleet', emoji: '🌨️', bg: '#0d9488', light: '#5eead4', event: true },
-  ice: { key: 'ice', emoji: '🧊', bg: '#0891b2', light: '#a5f3fc', event: true },
-  blizzard: { key: 'blizzard', emoji: '🌬️', bg: '#0e7490', light: '#a5f3fc', event: true },
-  snowHeavy: { key: 'snowHeavy', emoji: '❄️', bg: '#06b6d4', light: '#cffafe', event: true },
-  snow: { key: 'snow', emoji: '🌨️', bg: '#22d3ee', light: '#cffafe', event: true },
-
-  fog: { key: 'fog', emoji: '🌫️', bg: '#8a9a9a', light: '#d1dcdc', event: false },
-  haze: { key: 'haze', emoji: '🌁', bg: '#b08968', light: '#e7d3c0', event: false },
-  nearby: { key: 'nearby', emoji: '🌥️', bg: '#6b8ca8', light: '#bcd2e2', event: false },
-  overcast: { key: 'overcast', emoji: '☁️', bg: '#5b6b80', light: '#a7b4c4', event: false },
-  cloudy: { key: 'cloudy', emoji: '☁️', bg: '#7c8da3', light: '#c3cede', event: false },
-  partlyDay: { key: 'partlyDay', emoji: '⛅', bg: '#93a5c4', light: '#dbe4f0', event: false },
-  partlyNight: { key: 'partlyNight', emoji: '☁️', bg: '#6b7fa8', light: '#b3c1da', event: false },
-  sunny: { key: 'sunny', emoji: '☀️', bg: '#f59e0b', light: '#fde68a', event: false },
-  clearNight: { key: 'clearNight', emoji: '🌙', bg: '#6366f1', light: '#c7d2fe', event: false },
-};
-
-const classify = (text, isDay) => {
-  const t = (text || '').toLowerCase();
-  const heavy = /heavy|torrential/.test(t);
-
-  // "Patchy rain nearby" / "Thundery outbreaks in nearby" report weather *around*
-  // the point, not on it — and the former is the default daytime condition across
-  // much of the tropics. Treating them as events is what would paint a bubble on
-  // every sample over Jakarta on an ordinary afternoon.
-  if (/nearby|possible/.test(t)) return S.nearby;
-
-  if (t.includes('thunder')) return heavy ? S.thunderSevere : S.thunder;
-  if (t.includes('blizzard')) return S.blizzard;
-  if (t.includes('ice pellet') || t.includes('freezing')) return S.ice;
-  if (t.includes('sleet')) return S.sleet;
-  if (t.includes('snow')) return heavy ? S.snowHeavy : S.snow;
-  if (t.includes('drizzle')) return S.drizzle;
-  if (t.includes('rain') || t.includes('shower')) {
-    if (heavy) return S.rainHeavy;
-    return t.includes('moderate') ? S.rain : S.rainLight;
-  }
-  if (t.includes('fog') || t.includes('mist')) return S.fog;
-  if (/haze|smoke|dust|sand/.test(t)) return S.haze;
-  if (t.includes('overcast')) return S.overcast;
-  if (t.includes('partly') || t.includes('partial')) return isDay ? S.partlyDay : S.partlyNight;
-  if (t.includes('cloud')) return S.cloudy;
-  if (t.includes('sunny')) return S.sunny;
-  if (t.includes('clear')) return isDay ? S.sunny : S.clearNight;
-  return isDay ? S.cloudy : S.partlyNight;
-};
-
-// Which curated cities deserve a marker at this zoom.
-const rankLimit = (zoom) => (zoom < 4 ? 0 : zoom < 5.5 ? 1 : 2);
 
 // Shape a forecast.json response into the detail-panel model.
 const toDetail = (data) => {
@@ -198,19 +89,15 @@ const BASEMAP = {
 const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRouteShown }) => {
   const el = useRef(null);
   const mapRef = useRef(null);
-  const markerLayer = useRef(null);
   const routeLayer = useRef(null);
   const pinMarker = useRef(null);
   const radarLayer = useRef(null);
   const radarUrl = useRef(null);
   const baseLayer = useRef(null);
-  const cityCache = useRef(new Map()); // name → { at, wx }
-  const fetchTick = useRef(0);
   const detailRef = useRef(null); // latest openDetail, for Leaflet handlers
 
   const [ready, setReady] = useState(!!window.L);
   const [radarOn, setRadarOn] = useState(true);
-  const [cityWx, setCityWx] = useState({}); // name → { temp, cond, isDay }
   const [mode, setMode] = useState('explore'); // 'explore' | 'directions'
   const [q, setQ] = useState('');
   const [originText, setOriginText] = useState('');
@@ -260,15 +147,12 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
     }).addTo(map);
     L.control.zoom({ position: 'bottomright' }).addTo(map);
 
-    markerLayer.current = L.layerGroup().addTo(map);
-
     // Anywhere on the basemap is a valid question: "what's the weather here?"
     map.on('click', (e) => detailRef.current?.({ name: null, lat: e.latlng.lat, lon: e.latlng.lng }));
 
     return () => {
       map.remove();
       mapRef.current = null;
-      markerLayer.current = null;
       routeLayer.current = null;
       pinMarker.current = null;
       radarLayer.current = null;
@@ -322,122 +206,6 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
       cancelled = true;
     };
   }, [ready, radarOn]);
-
-  /* ---------------- weather-event markers over curated cities ---------------- */
-  const refreshCities = useCallback(async () => {
-    const map = mapRef.current;
-    if (!map) return;
-    const tick = ++fetchTick.current;
-    const bounds = map.getBounds().pad(0.15);
-    const zoom = map.getZoom();
-    const maxRank = rankLimit(zoom);
-    const center = map.getCenter();
-
-    // Named curated cities in view (world-city pills, shown at every zoom).
-    const named = CITIES.filter((c) => c.r <= maxRank && bounds.contains([c.lat, c.lon])).map((c) => ({
-      key: c.n,
-      name: c.n,
-      lat: c.lat,
-      lon: c.lon,
-    }));
-
-    // Zoomed into a city/region: the curated list is too sparse to fill the
-    // screen, so scatter unnamed sample points across the viewport.
-    let points = named;
-    if (zoom >= LOCAL_ZOOM) {
-      const spanLat = bounds.getNorth() - bounds.getSouth();
-      const spanLon = bounds.getEast() - bounds.getWest();
-      const scattered = scatterPoints(bounds, SAMPLE_COUNT)
-        // A named city already sitting on this spot covers it — skip the
-        // duplicate call.
-        .filter(
-          (p) =>
-            !named.some(
-              (c) => Math.abs(c.lat - p.lat) < spanLat * 0.08 && Math.abs(c.lon - p.lon) < spanLon * 0.08
-            )
-        )
-        .map((p) => ({ key: cacheKey(p.lat, p.lon), name: null, lat: p.lat, lon: p.lon }));
-      points = named.concat(scattered);
-    }
-
-    const visible = points
-      .sort(
-        (a, b) =>
-          (a.lat - center.lat) ** 2 + (a.lon - center.lng) ** 2 - ((b.lat - center.lat) ** 2 + (b.lon - center.lng) ** 2)
-      )
-      .slice(0, MAX_VISIBLE_CITIES);
-
-    const results = await Promise.all(
-      visible.map(async (p) => {
-        const hit = cityCache.current.get(p.key);
-        if (hit && Date.now() - hit.at < CITY_CACHE_MS) return [p.key, { ...hit.wx, name: p.name, lat: p.lat, lon: p.lon }];
-        try {
-          const data = await fetchCurrent(`${p.lat},${p.lon}`);
-          const wx = {
-            temp: Math.round(data.current.temp_c),
-            cond: data.current.condition.text,
-            isDay: data.current.is_day,
-          };
-          cityCache.current.set(p.key, { at: Date.now(), wx });
-          return [p.key, { ...wx, name: p.name, lat: p.lat, lon: p.lon }];
-        } catch {
-          return null;
-        }
-      })
-    );
-    if (tick !== fetchTick.current) return; // a newer pan superseded this pass
-    setCityWx(Object.fromEntries(results.filter(Boolean)));
-  }, []);
-
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!ready || !map) return;
-    refreshCities();
-    let t;
-    const onMove = () => {
-      clearTimeout(t);
-      t = setTimeout(refreshCities, 600);
-    };
-    map.on('moveend zoomend', onMove);
-    return () => {
-      clearTimeout(t);
-      map.off('moveend zoomend', onMove);
-    };
-  }, [ready, refreshCities]);
-
-  // Redraw the marker pills whenever fresh weather lands.
-  useEffect(() => {
-    const L = window.L;
-    const layer = markerLayer.current;
-    if (!ready || !L || !layer) return;
-    layer.clearLayers();
-
-    Object.values(cityWx).forEach((wx) => {
-      const cls = classify(wx.cond, wx.isDay);
-      // Named (curated) cities always get the temperature pill. Unnamed scatter
-      // points — the local sampling used once you're zoomed into a city — only
-      // render when they're an actual weather event; a dry point there is the
-      // default and would just repeat itself a dozen times over one city.
-      if (!wx.name && !cls.event) return;
-
-      const style = `--zen:${cls.bg};--zen-light:${cls.light}`;
-      const marker = L.marker([wx.lat, wx.lon], {
-        icon: L.divIcon({
-          className: '',
-          html: wx.name
-            ? `<div class="zen-pill${cls.event ? ' zen-live' : ''}" style="${style}">
-                 <span class="zen-emoji">${cls.emoji}</span>${wx.temp}°
-               </div>`
-            : `<div class="zen-blob" style="${style}">${cls.emoji}</div>`,
-          iconSize: null,
-          iconAnchor: wx.name ? [26, 14] : [16, 16],
-        }),
-        zIndexOffset: cls.event ? 500 : 0,
-      });
-      marker.on('click', () => detailRef.current?.({ name: wx.name, lat: wx.lat, lon: wx.lon }));
-      marker.addTo(layer);
-    });
-  }, [ready, cityWx]);
 
   /* ---------------- click-for-detail panel ---------------- */
   const openDetail = useCallback(async (place) => {
@@ -946,32 +714,18 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
       )}
 
       {/* ---------- legend ----------
-          Hue = weather family, depth = intensity. */}
-      <div className="absolute bottom-3 left-3 z-10 hidden items-center gap-3 rounded-full border border-ink/10 bg-panel/85 px-3 py-1.5 text-[10px] text-ink/55 backdrop-blur-xl sm:flex">
-        <span className="flex items-center gap-1.5">
-          <span
-            className="inline-block h-2 w-8 rounded-full"
-            style={{ background: `linear-gradient(90deg,${S.drizzle.bg},${S.rainLight.bg},${S.rain.bg},${S.rainHeavy.bg})` }}
-          />
-          Drizzle → downpour
-        </span>
-        <span className="flex items-center gap-1">
-          <span className="inline-block h-2 w-2 rounded-full" style={{ background: S.thunder.bg }} /> Storm
-        </span>
-        <span className="flex items-center gap-1">
-          <span className="inline-block h-2 w-2 rounded-full" style={{ background: S.snow.bg }} /> Snow / ice
-        </span>
-        <span className="flex items-center gap-1">
-          <span className="inline-block h-2 w-2 rounded-full" style={{ background: S.fog.bg }} /> Fog
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span
-            className="inline-block h-1.5 w-6 rounded-full"
-            style={{ background: `linear-gradient(90deg,${LEVEL.dry.color},${LEVEL.light.color},${LEVEL.wet.color})` }}
-          />
-          Route rain
-        </span>
-      </div>
+          Only meaningful once a route is drawn — it explains the road colouring. */}
+      {route && (
+        <div className="absolute bottom-3 left-3 z-10 hidden items-center gap-2 rounded-full border border-ink/10 bg-panel/85 px-3 py-1.5 text-[10px] text-ink/55 backdrop-blur-xl sm:flex">
+          <span className="flex items-center gap-1.5">
+            <span
+              className="inline-block h-1.5 w-6 rounded-full"
+              style={{ background: `linear-gradient(90deg,${LEVEL.dry.color},${LEVEL.light.color},${LEVEL.wet.color})` }}
+            />
+            Route rain: dry → wet
+          </span>
+        </div>
+      )}
     </div>
   );
 };
