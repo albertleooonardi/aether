@@ -1,11 +1,11 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { MessageCircle, X, Send, Bell, Sparkles } from 'lucide-react';
+import { MessageCircle, X, Send, Bell, Sparkles, RotateCw, ChevronDown } from 'lucide-react';
 import { parseReminder, answer, formatClock } from '../../chat/assistant';
 import { parseNavigation, parseWeatherIn, parseMapsUrl, parseFollowUp } from '../../chat/intents';
 import { fetchWeatherByCity } from '../../services/WeatherService';
 import { geocode, geocodeCandidates, resolveMapsUrl } from '../../services/GeoService';
 import { getRoutesWithRain } from '../../services/RouteService';
-import { askAI, checkAI } from '../../services/AetherAI';
+import { askAI, checkStatus, getProviders } from '../../services/AetherAI';
 import RichText from './RichText';
 import WeatherReplyCard from './WeatherReplyCard';
 import ChatRouteMap from './ChatRouteMap';
@@ -57,6 +57,42 @@ const SUGGESTIONS = [
   'Remind me to bring an umbrella at 5pm',
 ];
 
+// Backend liveness, surfaced in the header so you can tell at a glance whether
+// the chatbot is actually running (the honest answer to "is it up on Vercel?").
+const STATUS = {
+  checking: { dot: 'bg-amber-400', label: 'Connecting…', tone: 'text-ink/50', pulse: true },
+  online: { dot: 'bg-emerald-400', label: 'Online', tone: 'text-emerald-500', pulse: false },
+  basic: { dot: 'bg-amber-400', label: 'Basic mode', tone: 'text-amber-500', pulse: false },
+  offline: { dot: 'bg-rose-500', label: 'Offline', tone: 'text-rose-500', pulse: false },
+};
+
+const STATUS_NOTE = {
+  basic:
+    'The backend is running but no AI key is set, so replies use the built-in rules. Add GEMINI_API_KEY or GROQ_API_KEY.',
+  offline:
+    "Can't reach the assistant backend — on Vercel the /api function may not be deployed. Replies use the built-in rules meanwhile.",
+};
+
+// Which provider is actually serving right now: the primary if it's ready,
+// otherwise the first configured backup — mirrors the backend's failover order.
+const activeProviderId = (info) => {
+  if (!info) return null;
+  const order = info.primary === 'groq' ? ['groq', 'gemini'] : ['gemini', 'groq'];
+  const by = Object.fromEntries(info.providers.map((p) => [p.id, p]));
+  return order.find((id) => by[id]?.configured && by[id]?.available) || null;
+};
+
+// Status pill for one provider row.
+const providerState = (p, activeId) => {
+  if (!p.configured) return { label: 'Not set', dot: 'bg-ink/25', tone: 'text-ink/40' };
+  if (p.exhausted) {
+    const mins = p.cooldownEndsAt ? Math.max(1, Math.round((p.cooldownEndsAt - Date.now()) / 60000)) : null;
+    return { label: mins ? `Rate-limited · ~${mins}m` : 'Rate-limited', dot: 'bg-rose-500', tone: 'text-rose-500' };
+  }
+  if (p.id === activeId) return { label: 'Active', dot: 'bg-emerald-400', tone: 'text-emerald-500' };
+  return { label: 'Standby', dot: 'bg-ink/40', tone: 'text-ink/50' };
+};
+
 const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState('');
@@ -70,7 +106,11 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
     },
   ]);
   const [reminders, setReminders] = useState(loadReminders);
-  const [aiReady, setAiReady] = useState(false);
+  // 'checking' | 'online' | 'basic' | 'offline'
+  const [status, setStatus] = useState('checking');
+  // Expandable per-provider (Gemini/Groq) status, and its data.
+  const [showProviders, setShowProviders] = useState(false);
+  const [providerInfo, setProviderInfo] = useState(null);
   const timers = useRef({});
   const logEnd = useRef(null);
   const weatherRef = useRef(weather);
@@ -88,10 +128,25 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
   // or "how about at 8pm?" re-ask it with only that part changed.
   const lastIntent = useRef(null);
 
-  // Is the Gemini-backed AetherAI backend reachable?
-  useEffect(() => {
-    checkAI().then(setAiReady);
+  // Poll backend liveness: once on mount, then every 30s while the sheet is open
+  // (and immediately each time it opens), so a backend that comes up or goes down
+  // on Vercel is reflected without a page reload.
+  const loadProviders = useCallback(() => {
+    getProviders().then(setProviderInfo);
   }, []);
+
+  const probe = useCallback(() => {
+    setStatus((s) => (s === 'offline' ? 'checking' : s));
+    checkStatus().then((r) => setStatus(r.status));
+    loadProviders();
+  }, [loadProviders]);
+
+  useEffect(() => {
+    probe();
+    if (!open) return undefined;
+    const id = setInterval(probe, 30000);
+    return () => clearInterval(id);
+  }, [open, probe]);
 
   // Weather context handed to the AI for grounded answers — the same data the
   // app's own cards render: current conditions, the next hours, and the 3-day
@@ -386,7 +441,7 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
           .map((m) => ({ role: m.role, text: m.text }));
         history.push({ role: 'user', text });
         const out = await askAI(history, aiContext());
-        setAiReady(true);
+        setStatus('online'); // a real reply just came back — definitely up
         sayAssistant(out.reply);
       } catch {
         sayAssistant(answer(text, weatherRef.current, reminders, hourlyRef.current, forecastRef.current));
@@ -397,6 +452,7 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
   };
 
   const activeCount = reminders.filter((r) => r.dueEpoch > Date.now()).length;
+  const meta = STATUS[status] || STATUS.checking;
 
   return (
     <>
@@ -410,6 +466,16 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
         } fixed bottom-5 right-5 z-50 h-14 w-14 items-center justify-center rounded-full bg-accent text-accentFg shadow-2xl transition-transform hover:scale-105 active:scale-95 mb-[env(safe-area-inset-bottom)]`}
       >
         {open ? <X size={24} /> : <MessageCircle size={24} />}
+        {/* Liveness dot, so the backend's state is visible without opening the
+            chat — the whole point of the status work. */}
+        {!open && (
+          <span
+            title={`Assistant: ${meta.label}`}
+            className={`absolute -bottom-0.5 -right-0.5 h-4 w-4 rounded-full border-2 border-page ${meta.dot} ${
+              meta.pulse ? 'animate-pulse' : ''
+            }`}
+          />
+        )}
         {!open && activeCount > 0 && (
           <span className="absolute -right-0.5 -top-0.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-sky-500 px-1 text-[11px] font-bold text-white">
             {activeCount}
@@ -422,28 +488,36 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
         // familiar floating panel.
         <div className="fixed inset-0 z-50 flex h-dvh w-full flex-col overflow-hidden bg-panel/90 shadow-2xl backdrop-blur-2xl animate-fade-in-up sm:inset-auto sm:bottom-24 sm:right-5 sm:h-[min(660px,82vh)] sm:w-[min(440px,calc(100vw-2rem))] sm:rounded-3xl sm:border sm:border-ink/10 sm:bg-panel/85">
           {/* Header */}
-          <div className="flex items-center gap-2.5 border-b border-ink/10 px-4 py-3.5 pt-[max(0.875rem,env(safe-area-inset-top))] sm:pt-3.5">
-            <span className="flex h-9 w-9 items-center justify-center rounded-full bg-[#434D5C]">
-              <Sparkles size={17} className="text-[#8C99AC]" />
+          <div className="flex items-center gap-3 border-b border-ink/10 px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top))] sm:pt-3">
+            <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#434D5C]">
+              <Sparkles size={16} className="text-[#8C99AC]" />
+              {/* Status ring on the avatar mirrors the header label. */}
+              <span
+                className={`absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-panel ${meta.dot} ${
+                  meta.pulse ? 'animate-pulse' : ''
+                }`}
+              />
             </span>
-            <div className="flex-1">
-              <div className="flex items-center gap-1.5">
-                <span className="text-sm font-semibold text-ink">AetherAI</span>
-                {/* Without a provider key the LLM never runs and every reply comes
-                    from the small rule-based assistant. Say so, rather than just
-                    seeming dim. */}
-                {!aiReady && (
-                  <span
-                    title="No AI provider key is configured, so I'm answering with simple built-in rules. Add GEMINI_API_KEY or GROQ_API_KEY to .env and restart the server."
-                    className="rounded-full bg-amber-400/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-300/90"
-                  >
-                    basic mode
-                  </span>
-                )}
-              </div>
-              <div className="text-[11px] text-ink/50">
-                {weather ? `${weather.city} · ${weather.temp}°` : 'Ask me anything about the weather'}
-              </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-semibold leading-tight text-ink">AetherAI</div>
+              {/* Live status — click to expand per-provider (Gemini/Groq) status. */}
+              <button
+                onClick={() => {
+                  setShowProviders((v) => !v);
+                  probe();
+                }}
+                title="Gemini & Groq status"
+                aria-expanded={showProviders}
+                className="mt-0.5 flex items-center gap-1.5 text-[11px] transition-opacity hover:opacity-80"
+              >
+                <span className={`h-1.5 w-1.5 rounded-full ${meta.dot} ${meta.pulse ? 'animate-pulse' : ''}`} />
+                <span className={`font-medium ${meta.tone}`}>{meta.label}</span>
+                {weather && <span className="truncate text-ink/40">· {weather.city} {weather.temp}°</span>}
+                <ChevronDown
+                  size={11}
+                  className={`text-ink/40 transition-transform ${showProviders ? 'rotate-180' : ''}`}
+                />
+              </button>
             </div>
             {activeCount > 0 && (
               <span className="flex items-center gap-1 rounded-full bg-ink/10 px-2.5 py-1 text-[11px] text-ink/70">
@@ -460,21 +534,83 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
             </button>
           </div>
 
+          {/* Per-provider (Gemini / Groq) status, expanded from the header. */}
+          {showProviders && (
+            <div className="border-b border-ink/10 bg-ink/[0.03] px-4 py-3">
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-[10px] font-semibold uppercase tracking-wide text-ink/40">AI providers</span>
+                <button
+                  onClick={probe}
+                  title="Refresh"
+                  className="flex items-center gap-1 text-[10px] text-ink/45 transition-colors hover:text-ink"
+                >
+                  <RotateCw size={10} /> Refresh
+                </button>
+              </div>
+
+              {status === 'offline' ? (
+                <p className="text-[11px] leading-snug text-rose-500">
+                  Backend unreachable — on Vercel the <span className="font-mono">/api</span> function may not be
+                  deployed. Replies fall back to the built-in rules.
+                </p>
+              ) : !providerInfo ? (
+                <p className="text-[11px] text-ink/45">Checking Gemini and Groq…</p>
+              ) : (
+                <div className="space-y-1.5">
+                  {providerInfo.providers.map((p) => {
+                    const st = providerState(p, activeProviderId(providerInfo));
+                    return (
+                      <div key={p.id} className="flex items-center gap-2">
+                        <span className={`h-2 w-2 shrink-0 rounded-full ${st.dot}`} />
+                        <span className="text-[13px] font-medium text-ink">{p.label}</span>
+                        {p.id === providerInfo.primary && (
+                          <span className="rounded-full bg-ink/10 px-1.5 py-px text-[9px] font-medium text-ink/50">
+                            primary
+                          </span>
+                        )}
+                        <span className="truncate font-mono text-[10px] text-ink/35">{p.model}</span>
+                        <span className={`ml-auto shrink-0 text-[11px] font-medium ${st.tone}`}>{st.label}</span>
+                      </div>
+                    );
+                  })}
+                  {status === 'basic' && (
+                    <p className="pt-1 text-[10px] leading-snug text-amber-500">
+                      No key configured — add GEMINI_API_KEY or GROQ_API_KEY, then Refresh.
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* When the LLM isn't available, say why and what to do — this is the
+              thing that was impossible to diagnose on Vercel before. Hidden while
+              the provider panel is open, since that already explains it. */}
+          {STATUS_NOTE[status] && !showProviders && (
+            <div
+              className={`border-b border-ink/10 px-4 py-2 text-[11px] leading-snug ${
+                status === 'offline' ? 'bg-rose-500/10 text-rose-500' : 'bg-amber-400/10 text-amber-500'
+              }`}
+            >
+              {STATUS_NOTE[status]}
+            </div>
+          )}
+
           {/* Messages */}
-          <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
+          <div className="flex-1 space-y-5 overflow-y-auto px-4 py-5">
             {messages.map((m) =>
               m.role === 'user' ? (
                 <div key={m.id} className="flex justify-end">
-                  <div className="max-w-[85%] whitespace-pre-line rounded-2xl rounded-br-md bg-accent px-3.5 py-2 text-sm text-accentFg">
+                  <div className="max-w-[85%] whitespace-pre-line rounded-2xl bg-ink/[0.07] px-4 py-2.5 text-[14.5px] leading-relaxed text-ink">
                     {m.text}
                   </div>
                 </div>
               ) : (
-                <div key={m.id} className="flex gap-2.5">
+                <div key={m.id} className="flex gap-3">
                   <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#434D5C]">
                     <Sparkles size={13} className="text-[#8C99AC]" />
                   </span>
-                  <div className="min-w-0 max-w-[calc(100%-2.5rem)] flex-1 text-ink/90">
+                  <div className="min-w-0 max-w-[calc(100%-2.5rem)] flex-1 text-[14.5px] leading-relaxed text-ink/85">
                     <RichText text={m.text} />
                     {m.kind === 'weather' && <WeatherReplyCard data={m.data} />}
                     {m.kind === 'route' && (
@@ -499,15 +635,15 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
             )}
 
             {busy && (
-              <div className="flex gap-2.5">
+              <div className="flex gap-3">
                 <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#434D5C]">
                   <Sparkles size={13} className="text-[#8C99AC]" />
                 </span>
-                <div className="flex items-center gap-1 rounded-2xl bg-ink/10 px-3.5 py-3">
+                <div className="flex items-center gap-1 py-2">
                   {[0, 1, 2].map((i) => (
                     <span
                       key={i}
-                      className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink/60"
+                      className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink/40"
                       style={{ animationDelay: `${i * 0.15}s` }}
                     />
                   ))}
@@ -517,41 +653,44 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
             <div ref={logEnd} />
           </div>
 
-          {/* Quick suggestions */}
-          <div className="no-scrollbar flex gap-2 overflow-x-auto px-4 pb-2">
-            {SUGGESTIONS.map((q) => (
-              <button
-                key={q}
-                onClick={() => setInput(q)}
-                className="shrink-0 rounded-full bg-ink/10 px-3 py-1.5 text-xs text-ink/70 transition-colors hover:bg-ink/20"
-              >
-                {q}
-              </button>
-            ))}
-          </div>
+          {/* Starter prompts — shown only before the conversation begins, the way
+              Claude offers suggestions on an empty thread, then gets out of the way. */}
+          {messages.length <= 1 && (
+            <div className="no-scrollbar flex gap-2 overflow-x-auto px-4 pb-2">
+              {SUGGESTIONS.map((q) => (
+                <button
+                  key={q}
+                  onClick={() => setInput(q)}
+                  className="shrink-0 rounded-full border border-ink/15 px-3 py-1.5 text-xs text-ink/70 transition-colors hover:border-ink/30 hover:bg-ink/5 hover:text-ink"
+                >
+                  {q}
+                </button>
+              ))}
+            </div>
+          )}
 
           {/* Input */}
           <form
             onSubmit={handleSubmit}
-            className="border-t border-ink/10 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pb-3"
+            className="p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pb-3"
           >
-            <div className="flex items-center gap-2 rounded-2xl bg-ink/5 p-1.5">
+            <div className="flex items-end gap-2 rounded-[1.4rem] border border-ink/12 bg-ink/[0.04] p-1.5 pl-2 transition-colors focus-within:border-ink/25 focus-within:bg-ink/[0.06]">
               <input
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                placeholder="Ask about any place, a route, or set a reminder…"
+                placeholder="Message AetherAI…"
                 disabled={busy}
                 // text-base on phones: anything under 16px makes iOS zoom the
                 // whole page every time the input is focused.
-                className="w-full bg-transparent px-3 py-1.5 text-base text-ink placeholder-ink/40 outline-none disabled:opacity-60 sm:text-sm"
+                className="w-full bg-transparent px-2.5 py-2 text-base text-ink placeholder-ink/40 outline-none disabled:opacity-60 sm:text-sm"
               />
               <button
                 type="submit"
                 aria-label="Send"
-                disabled={busy}
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-accent text-accentFg transition-transform active:scale-95 disabled:opacity-50"
+                disabled={busy || !input.trim()}
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent text-accentFg transition-transform active:scale-95 disabled:opacity-30"
               >
-                <Send size={16} />
+                <Send size={15} />
               </button>
             </div>
           </form>
