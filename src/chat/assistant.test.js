@@ -16,6 +16,8 @@ const weather = {
   chanceOfRain: 8,
   todayLow: 25,
   todayHigh: 33,
+  sunrise: '05:32 AM',
+  sunset: '05:48 PM',
 };
 
 // These rules are first-match-wins, so a broad rule placed above a specific one
@@ -33,8 +35,54 @@ describe('rule ordering', () => {
     expect(answer('should I take an umbrella?', weather)).toMatch(/chance of rain/i);
   });
 
+  // t.includes('rain') fired inside "train", "terrain" and "Ukraine", and the rain
+  // rule sits above the clothing and temperature rules that should have answered.
+  test('"what should I wear on the train" is about clothes, not rain', () => {
+    const out = answer('what should I wear on the train', weather);
+    expect(out).not.toMatch(/chance of rain today/);
+    expect(out).toMatch(/clothing|jacket|layers/i);
+  });
+
+  test('"do I need a jacket on the train?" is about clothes, not rain', () => {
+    expect(answer('do I need a jacket on the train?', weather)).toMatch(/clothing|jacket|layers/i);
+  });
+
+  test('"is Ukraine cold?" is answered with the temperature', () => {
+    const out = answer('is Ukraine cold?', weather);
+    expect(out).not.toMatch(/chance of rain today/);
+    expect(out).toMatch(/It's 28° in Jembatanmerah/);
+  });
+
+  test('real rain questions still reach the rain rule', () => {
+    expect(answer('is it raining?', weather)).toMatch(/chance of rain today/);
+    expect(answer('will it rain later', weather)).toMatch(/chance of rain today/);
+  });
+
   test('a plain forecast question still gets the forecast', () => {
     expect(answer("what's the forecast?", weather)).toMatch(/Today in Jembatanmerah/);
+  });
+});
+
+// The UV rule tested t.includes('sun'), so "what time is sunset" was answered
+// with the UV index even though App.js puts the astro times on the weather object.
+describe('sunrise and sunset', () => {
+  test.each(['what time is sunset', 'when does the sun set', 'what time is sunrise'])('%j gives the times, not the UV index', (text) => {
+    const out = answer(text, weather);
+    expect(out).not.toMatch(/UV index/);
+    expect(out).toBe('In Jembatanmerah, sunrise is at 05:32 AM and sunset at 05:48 PM.');
+  });
+
+  // Tightening the UV test must not cost it the words that really are UV questions.
+  test.each(['what is the uv index', 'is it sunny?', 'do I need sunscreen', 'will I get sunburn'])(
+    '%j still gets the UV index',
+    (text) => {
+      expect(answer(text, weather)).toMatch(/UV index is 0/);
+    }
+  );
+
+  test('missing astro data is admitted, not printed as "undefined"', () => {
+    const noAstro = { ...weather, sunrise: null, sunset: null };
+    expect(answer('what time is sunset', noAstro)).toMatch(/don't have sunrise and sunset times/);
   });
 });
 

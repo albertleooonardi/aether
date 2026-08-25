@@ -79,7 +79,17 @@ const contextText = (context) =>
     ? `\n\nAPP WEATHER DATA (JSON): ${JSON.stringify(context)}`
     : '\n\nNo location is loaded in the app yet — the user should search a city first.';
 
-const trimmed = (messages) => messages.slice(-HISTORY_TURNS).filter((m) => m && m.text);
+// The app sends { role, text }, but an OpenAI-shaped { role, content } is what
+// any curl probe or third-party client will send. Filtering on m.text alone
+// dropped those silently: the request looked healthy (HTTP 200) while Gemini was
+// called with an empty conversation, 400'd, and the failover answered a prompt
+// containing no user text at all. Accept either key, and normalise onto `text`
+// so the two provider call sites keep reading one field.
+const trimmed = (messages) =>
+  (Array.isArray(messages) ? messages : [])
+    .slice(-HISTORY_TURNS)
+    .map((m) => m && { ...m, text: m.text || m.content })
+    .filter((m) => m && m.text);
 
 /* ---------------- AI tools: live weather + routing for the model ---------------- */
 const TOOL_DEFS = [
@@ -665,6 +675,8 @@ function usageHandler() {
 async function chatHandler(body) {
   const { messages = [], context = null } = body || {};
   if (!hasKey('gemini') && !hasKey('groq')) return { status: 200, body: { error: 'no_key' } };
+  // Nothing to answer: don't spend a provider call (and a failover) on it.
+  if (!trimmed(messages).length) return { status: 400, body: { error: 'no_messages' } };
   try {
     const out = await generate(messages, context);
     return { status: 200, body: out };
@@ -675,6 +687,7 @@ async function chatHandler(body) {
 
 module.exports = {
   hasKey,
+  trimmed,
   ORDER,
   META,
   healthHandler,

@@ -44,10 +44,13 @@ export const askAI = async (messages, context) => {
  * `providers` / `primary` are echoed through for the header tooltip.
  */
 export const checkStatus = async () => {
+  // try/finally, as askAI does: a t.clear() placed after the await is skipped
+  // whenever fetch throws, leaving the 4s abort timer armed. Harmless in a
+  // browser, but ChatWidget re-probes every 30s and each failed probe used to
+  // keep the event loop alive for another 4s under test.
+  const t = withTimeout(4000);
   try {
-    const t = withTimeout(4000);
     const res = await fetch('/api/health', { signal: t.signal });
-    t.clear();
     if (!res.ok) return { status: 'offline', providers: null, primary: null };
     const data = await res.json();
     return {
@@ -57,5 +60,7 @@ export const checkStatus = async () => {
     };
   } catch {
     return { status: 'offline', providers: null, primary: null };
+  } finally {
+    t.clear();
   }
 };

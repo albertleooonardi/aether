@@ -26,10 +26,29 @@ describe('parseWeatherIn', () => {
     expect(parseWeatherIn('what is the chance of rain in Pontianak')).toBe('Pontianak');
   });
 
+  // The capture ran greedily to the next punctuation mark, so a filler head or a
+  // trailing clause with no comma before it went to the geocoder verbatim.
+  test.each([
+    ['is the weather good for running in Bandung', 'Bandung'],
+    ['will it rain in Bandung on my way home', 'Bandung'],
+  ])('%j -> %j', (text, place) => {
+    expect(parseWeatherIn(text)).toBe(place);
+  });
+
   test('current-location questions stay with the current location', () => {
     expect(parseWeatherIn('what is the weather in my area')).toBeNull();
     expect(parseWeatherIn('is it hot here')).toBeNull();
   });
+
+  // The trailing-time-word strip needs a leading \s+, so it only removed a time
+  // word that followed a place. When the capture WAS the time word, "tomorrow"
+  // was handed to the geocoder as if it were a city.
+  test.each(['what is the forecast for tomorrow', 'what is the forecast for today', 'will it rain in the afternoon'])(
+    '%j names no place',
+    (text) => {
+      expect(parseWeatherIn(text)).toBeNull();
+    }
+  );
 
   test('non-weather messages are ignored', () => {
     expect(parseWeatherIn('remind me to call mum at 6pm')).toBeNull();
@@ -44,6 +63,23 @@ test.each([
   'Route from my place to Grand Indonesia - will it rain?',
 ])('strips the trailing dash from %j', (text) => {
   expect(parseNavigation(text).destText).toBe('Grand Indonesia');
+});
+
+// STOP treated every dot as a clause terminator, so an abbreviated address —
+// ordinary input in this locale — was cut down to its first two letters and the
+// geocoder was handed "Jl".
+test.each([
+  ['navigate to Jl. Tunjungan No. 1', 'Jl. Tunjungan No. 1'],
+  ['route to Dr. Soetomo Hospital', 'Dr. Soetomo Hospital'],
+  ['directions to St. Mary Hospital', 'St. Mary Hospital'],
+  ['route from Jl. Basuki Rahmat to Jl. Tunjungan', 'Jl. Tunjungan'],
+])('keeps the abbreviation dot in %j', (text, dest) => {
+  expect(parseNavigation(text).destText).toBe(dest);
+});
+
+// A dot that really does end a sentence must still terminate the clause.
+test('a sentence-ending dot still terminates the destination', () => {
+  expect(parseNavigation('route to Bandung. Thanks').destText).toBe('Bandung');
 });
 
 test('a dash inside a place name is kept', () => {
@@ -132,6 +168,17 @@ test.each([
   ['omw to Grand Indonesia, do I need an umbrella?', 'Grand Indonesia'],
   ['I am visiting Kota Tua at 6pm, will it be wet?', 'Kota Tua'],
 ])('parses trip phrasing %j', (text, dest) => {
+  expect(parseNavigation(text)).toMatchObject({ destText: dest, asksRain: true });
+});
+
+// NAV is used inside \b…\b, so a bare "commute"/"travel" alternative could never
+// match an inflected form: "travelling to Malang, will it rain?" was not recognised
+// as navigation at all and fell through to a current-city rain reply.
+test.each([
+  ['travelling to Malang tomorrow, will it rain?', 'Malang'],
+  ['traveling to Malang, will it rain?', 'Malang'],
+  ['commuting to Bandung, any rain?', 'Bandung'],
+])('parses inflected nav verbs %j', (text, dest) => {
   expect(parseNavigation(text)).toMatchObject({ destText: dest, asksRain: true });
 });
 

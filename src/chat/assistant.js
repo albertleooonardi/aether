@@ -132,7 +132,11 @@ export const answer = (text, weather, reminders = [], hourly = [], forecast = []
     }`;
   }
 
-  if (t.includes('rain') || t.includes('umbrella') || t.includes('wet')) {
+  // A raw includes('rain') also fires inside "train", "terrain" and "Ukraine", and
+  // this broad rule sits above the clothing and temperature rules — so "what should
+  // I wear on the train" was answered about rain. Word-boundaried, with inflections
+  // (raining/rainy/rains) so nothing that used to match is lost.
+  if (/\brain(?:ing|y|s)?\b/.test(t) || t.includes('umbrella') || t.includes('wet')) {
     // Hour-by-hour beats the daily number for "later"/"tonight": say when.
     if (hourly.length) {
       const rainy = hourly.find((h) => h.chanceOfRain >= 40);
@@ -166,7 +170,20 @@ export const answer = (text, weather, reminders = [], hourly = [], forecast = []
   if (t.includes('humid')) {
     return `Humidity is ${weather.humidity}% and the dew point is ${weather.dewpoint}°.`;
   }
-  if (t.includes('uv') || t.includes('sun')) {
+  // Must sit above the UV rule: that rule's t.includes('sun') is a substring test,
+  // so every sunrise/sunset question was answered with the UV index. App.js puts
+  // the day's astro times on the weather object, so the answer is already in scope.
+  if (/\bsun(?:rise|set)\b/.test(t) || /\bsun\s+(?:rise|set|goes down|comes up)\b/.test(t)) {
+    // astro can be missing from the forecast day — App.js stores null then.
+    if (!weather.sunrise || !weather.sunset) {
+      return `I don't have sunrise and sunset times for ${weather.city} right now.`;
+    }
+    return `In ${weather.city}, sunrise is at ${weather.sunrise} and sunset at ${weather.sunset}.`;
+  }
+  // \bsun\b rather than includes('sun'), so "sunset"/"sunrise" fall to the rule
+  // above. sunny/sunshine/sunscreen/sunburn are spelled out because they are
+  // genuine UV questions and a bare \bsun\b would no longer reach them.
+  if (t.includes('uv') || /\bsun(?:ny|shine|screen|burn)?\b/.test(t)) {
     return `The UV index is ${weather.uv}. ${weather.uv >= 6 ? 'High — wear sunscreen.' : 'Moderate to low.'}`;
   }
   if (t.includes('forecast') || t.includes('tomorrow') || t.includes('today')) {

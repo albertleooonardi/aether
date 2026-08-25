@@ -81,6 +81,8 @@ describe('a longer session routes every turn to the matching handler', () => {
     ['is it going to rain today', 'fallback', {}],
     ['is it going to rain in Tokyo', 'weather-in', { place: 'Tokyo' }],
     ['what should I wear today?', 'fallback', {}],
+    // "tomorrow" is a time, not a city — this used to be geocoded as a place.
+    ['what is the forecast for tomorrow', 'fallback', {}],
   ])('%j → %s', (text, kind, extra) => {
     expect(route(text)).toMatchObject({ kind, ...extra });
   });
@@ -110,6 +112,12 @@ describe('fallback answers use the app data, and match the question', () => {
     expect(reply).toMatch(/Tomorrow/);
     expect(reply).toMatch(/65%/);
     expect(reply).not.toMatch(/\b4%/);
+  });
+
+  test('"what is the forecast for tomorrow" is answered from tomorrow\'s forecast', () => {
+    const reply = answer('what is the forecast for tomorrow', weather, [], hourlyDry, forecast);
+    expect(reply).toMatch(/Tomorrow in Jembatanmerah/);
+    expect(reply).toMatch(/65%/);
   });
 
   test('temperature question answers with temperature', () => {
