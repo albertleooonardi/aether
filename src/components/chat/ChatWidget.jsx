@@ -5,7 +5,7 @@ import { parseNavigation, parseWeatherIn, parseMapsUrl, parseFollowUp } from '..
 import { fetchWeatherByCity } from '../../services/WeatherService';
 import { geocode, geocodeCandidates, resolveMapsUrl } from '../../services/GeoService';
 import { getRoutesWithRain } from '../../services/RouteService';
-import { askAI, checkStatus } from '../../services/AetherAI';
+import { askAI, checkStatus, logTurn } from '../../services/AetherAI';
 import RichText from './RichText';
 import WeatherReplyCard from './WeatherReplyCard';
 import ChatRouteMap from './ChatRouteMap';
@@ -212,7 +212,9 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleWeatherIn = async (place) => {
+  const handleWeatherIn = async (place, meta = {}) => {
+    const { handler = 'weather-in', rawText = place } = meta;
+    const startedAt = Date.now();
     try {
       const data = await fetchWeatherByCity(place);
       const card = toCard(data);
@@ -221,12 +223,33 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
         kind: 'weather',
         data: card,
       });
+      logTurn({
+        handler,
+        message: rawText,
+        parsed: { place },
+        outcome: 'ok',
+        city: card.name,
+        latency_ms: Date.now() - startedAt,
+      });
     } catch {
       sayAssistant(`I couldn't find weather for “${place}”. Try a different spelling or a nearby city.`);
+      // The place the user asked about couldn't be geocoded/looked up — this
+      // is exactly the "geocode_failed" standing bug report this logging
+      // exists for.
+      logTurn({
+        handler,
+        message: rawText,
+        parsed: { place },
+        outcome: 'geocode_failed',
+        city: place,
+        latency_ms: Date.now() - startedAt,
+      });
     }
   };
 
-  const handleNavigation = async (nav) => {
+  const handleNavigation = async (nav, meta = {}) => {
+    const { handler = 'route', rawText = nav.destText } = meta;
+    const startedAt = Date.now();
     const w = weatherRef.current;
     const here = w && Number.isFinite(w.lat) ? { lat: w.lat, lon: w.lon } : null;
     const originLoc = nav.originText
@@ -236,56 +259,105 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
       : null;
 
     if (!originLoc) {
-      return sayAssistant(
+      sayAssistant(
         nav.originText
           ? `I couldn't find your starting point “${nav.originText}”.`
           : 'Search a city in the app first so I can use it as your starting point.'
       );
+      // Origin couldn't be resolved to a place at all — a geocode failure.
+      logTurn({
+        handler,
+        message: rawText,
+        parsed: { origin: nav.originText || null, destination: nav.destText },
+        outcome: 'geocode_failed',
+        city: nav.originText || null,
+        latency_ms: Date.now() - startedAt,
+      });
+      return;
     }
 
     // A pasted Google Maps link is already an exact spot — no guessing needed.
     if (nav.isUrl) {
       const pin = await resolveMapsUrl(nav.destText);
       if (!pin) {
-        return sayAssistant(
+        sayAssistant(
           "I couldn't read a location out of that link. Open it in Google Maps, then copy the URL from the address bar — the one with coordinates in it."
         );
+        logTurn({
+          handler,
+          message: rawText,
+          parsed: { origin: originLoc.name, destination: nav.destText },
+          outcome: 'geocode_failed',
+          city: originLoc.name,
+          latency_ms: Date.now() - startedAt,
+        });
+        return;
       }
-      return await runRoute(nav, originLoc, pin);
+      return await runRoute(nav, originLoc, pin, { handler, rawText });
     }
 
     // Bias the destination search around the origin — you drive from there.
     const candidates = await geocodeCandidates(nav.destText, originLoc);
     if (!candidates.length) {
       pending.current = { nav, originLoc };
-      return sayAssistant(
+      sayAssistant(
         `I couldn't find “${nav.destText}”. Try adding the city — or paste a Google Maps link and I'll use that exact spot.`
       );
+      // Destination geocode returned nothing — same failure class as the
+      // origin case above.
+      logTurn({
+        handler,
+        message: rawText,
+        parsed: { origin: originLoc.name, destination: nav.destText },
+        outcome: 'geocode_failed',
+        city: originLoc.name,
+        latency_ms: Date.now() - startedAt,
+      });
+      return;
     }
     // One clear hit: just go. Several: ask, rather than betting on the top one.
-    if (candidates.length === 1) return await runRoute(nav, originLoc, candidates[0]);
+    if (candidates.length === 1) return await runRoute(nav, originLoc, candidates[0], { handler, rawText });
 
     pending.current = { nav, originLoc };
     // The question carries its own context: picking from an older picker must
     // route that request, not whichever one was asked most recently.
-    return sayAssistant(`I found a few places called “${nav.destText}” — which one did you mean?`, {
+    sayAssistant(`I found a few places called “${nav.destText}” — which one did you mean?`, {
       kind: 'choice',
       data: { query: nav.destText, candidates, origin: originLoc, chosen: null, nav },
+    });
+    logTurn({
+      handler,
+      message: rawText,
+      parsed: { origin: originLoc.name, destination: nav.destText },
+      outcome: 'ok',
+      city: originLoc.name,
+      latency_ms: Date.now() - startedAt,
     });
   };
 
   // Resolve a picked/pasted destination into an actual routed answer.
-  const runRoute = async (nav, originLoc, destLoc) => {
+  const runRoute = async (nav, originLoc, destLoc, meta = {}) => {
+    const { handler = 'route', rawText = nav.destText } = meta;
+    const startedAt = Date.now();
     const departAt = nav.departAt || Date.now();
     let result;
     try {
       result = await getRoutesWithRain(originLoc, destLoc, departAt);
     } catch (err) {
-      return sayAssistant(
+      sayAssistant(
         err.code === 'no_route'
           ? `I couldn't find a driving route from **${originLoc.name}** to **${destLoc.name}** — they don't look connected by road. If I picked the wrong “${nav.destText}”, try adding the city.`
           : `I couldn't fetch driving directions right now (${err.message}).`
       );
+      logTurn({
+        handler,
+        message: rawText,
+        parsed: { origin: originLoc.name, destination: destLoc.name },
+        outcome: 'route_failed',
+        city: originLoc.name,
+        latency_ms: Date.now() - startedAt,
+      });
+      return;
     }
 
     const best = result.routes[result.bestIndex];
@@ -320,6 +392,14 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
       kind: 'route',
       data: { origin: originLoc, dest: destLoc, routes: result.routes, bestIndex: result.bestIndex },
     });
+    logTurn({
+      handler,
+      message: rawText,
+      parsed: { origin: originLoc.name, destination: destLoc.name },
+      outcome: 'ok',
+      city: destLoc.name,
+      latency_ms: Date.now() - startedAt,
+    });
   };
 
   // User tapped one of the candidates. Lock the list to the choice so the picker
@@ -330,7 +410,7 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
     pending.current = null; // this question is answered
     setBusy(true);
     try {
-      await runRoute(msg.data.nav, msg.data.origin, choice);
+      await runRoute(msg.data.nav, msg.data.origin, choice, { handler: 'route', rawText: msg.data.nav.destText });
     } finally {
       setBusy(false);
     }
@@ -357,6 +437,7 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
         Notification.requestPermission();
       }
       sayAssistant(`Got it — I'll remind you to **${reminder.label}** at ${formatClock(reminder.dueEpoch)}.`);
+      logTurn({ handler: 'reminder', message: text, parsed: { label: reminder.label }, outcome: 'ok' });
       return;
     }
 
@@ -370,19 +451,27 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
         pending.current = null;
         const pin = await resolveMapsUrl(url);
         if (!pin) {
-          return sayAssistant(
+          sayAssistant(
             "I couldn't read a location out of that link. Open it in Google Maps, then copy the URL from the address bar — the one with coordinates in it."
           );
+          logTurn({
+            handler: 'route',
+            message: text,
+            parsed: { destination: p.nav.destText },
+            outcome: 'geocode_failed',
+            city: p.originLoc.name,
+          });
+          return;
         }
-        return await runRoute(p.nav, p.originLoc, pin);
+        return await runRoute(p.nav, p.originLoc, pin, { handler: 'route', rawText: text });
       }
 
       // Rich, action-backed intents render cards/maps.
       const nav = parseNavigation(text);
-      if (nav) return await handleNavigation(nav);
+      if (nav) return await handleNavigation(nav, { handler: 'route', rawText: text });
 
       const place = parseWeatherIn(text);
-      if (place) return await handleWeatherIn(place);
+      if (place) return await handleWeatherIn(place, { handler: 'weather-in', rawText: text });
 
       // "What about Central Park?" / "how about at 8pm?" — re-ask the previous
       // question with just that part swapped.
@@ -391,22 +480,31 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
       if (fu && last) {
         if (fu.place) {
           if (last.type === 'route') {
-            return await handleNavigation({
-              ...last.nav,
-              destText: fu.place,
-              isUrl: false,
-              departAt: fu.departAt ?? last.nav.departAt,
-            });
+            return await handleNavigation(
+              {
+                ...last.nav,
+                destText: fu.place,
+                isUrl: false,
+                departAt: fu.departAt ?? last.nav.departAt,
+              },
+              { handler: 'follow-up', rawText: text }
+            );
           }
-          return await handleWeatherIn(fu.place);
+          return await handleWeatherIn(fu.place, { handler: 'follow-up', rawText: text });
         }
         if (fu.departAt && last.type === 'route') {
-          return await runRoute({ ...last.nav, departAt: fu.departAt }, last.origin, last.dest);
+          return await runRoute(
+            { ...last.nav, departAt: fu.departAt },
+            last.origin,
+            last.dest,
+            { handler: 'follow-up', rawText: text }
+          );
         }
       }
 
       // Everything else → Gemini (AetherAI), grounded with weather context.
       // Falls back to the local assistant if the AI backend/key is unavailable.
+      const startedAt = Date.now();
       try {
         const history = messagesRef.current
           .filter((m) => m.role === 'user' || m.role === 'assistant')
@@ -415,8 +513,16 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
         const out = await askAI(history, aiContext());
         setStatus('online'); // a real reply just came back — definitely up
         sayAssistant(out.reply);
+        logTurn({
+          handler: 'ai',
+          message: text,
+          outcome: 'ok',
+          provider: out.provider,
+          latency_ms: Date.now() - startedAt,
+        });
       } catch {
         sayAssistant(answer(text, weatherRef.current, reminders, hourlyRef.current, forecastRef.current));
+        logTurn({ handler: 'fallback', message: text, outcome: 'ai_error', latency_ms: Date.now() - startedAt });
       }
     } finally {
       setBusy(false);

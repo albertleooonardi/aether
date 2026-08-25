@@ -21,6 +21,11 @@ const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-flash-latest';
 const GROQ_KEY = process.env.GROQ_API_KEY || '';
 const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
 const WEATHER_KEY = process.env.WEATHER_API_KEY || process.env.REACT_APP_WEATHER_API_KEY || '';
+// Supabase — chat-turn logging (debugging aid for the intent parser, not
+// training data). SERVICE_KEY bypasses RLS, so it must never reach the
+// browser; this module only runs server-side (dev server / Vercel function).
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || '';
 
 const MAX_OUTPUT = Number(process.env.AI_MAX_OUTPUT_TOKENS || 450);
 const HISTORY_TURNS = Number(process.env.AI_HISTORY_TURNS || 6);
@@ -685,6 +690,63 @@ async function chatHandler(body) {
   }
 }
 
+/* ---------------- chat-turn logging (Supabase, fire-and-forget) ---------------- */
+const LOG_MESSAGE_MAX = 2000;
+
+// chat_log exists to debug the intent parser (which handler answered a turn,
+// and whether it succeeded), not to build a location history — so lat/lon is
+// stripped out of `parsed` no matter how deep it's nested (e.g. a route's
+// { origin: { lat, lon } }). City NAMEs pass through untouched.
+const COORD_KEYS = new Set(['lat', 'lon', 'lng', 'latitude', 'longitude']);
+const stripCoords = (value) => {
+  if (Array.isArray(value)) return value.map(stripCoords);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([k]) => !COORD_KEYS.has(k.toLowerCase()))
+        .map(([k, v]) => [k, stripCoords(v)])
+    );
+  }
+  return value;
+};
+
+// Telemetry, not a feature: every failure here (no env vars, table not
+// created yet, network error, any Supabase 4xx/5xx) is swallowed and this
+// always resolves 204 — a broken or absent logging backend must never surface
+// to the chat UI or delay a reply.
+async function logHandler(body) {
+  // Same no-op degradation as the missing-AI-key path: nothing configured,
+  // nothing attempted.
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) return { status: 204, body: {} };
+  try {
+    const b = body || {};
+    const row = {
+      session_id: typeof b.session_id === 'string' ? b.session_id : null,
+      message: typeof b.message === 'string' ? b.message.slice(0, LOG_MESSAGE_MAX) : null,
+      handler: typeof b.handler === 'string' ? b.handler : null,
+      parsed: b.parsed && typeof b.parsed === 'object' ? stripCoords(b.parsed) : null,
+      outcome: typeof b.outcome === 'string' ? b.outcome : null,
+      city: typeof b.city === 'string' ? b.city : null,
+      provider: typeof b.provider === 'string' ? b.provider : null,
+      latency_ms: Number.isFinite(b.latency_ms) ? b.latency_ms : null,
+    };
+    await fetch(`${SUPABASE_URL}/rest/v1/chat_log`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+        Prefer: 'return=minimal',
+      },
+      body: JSON.stringify(row),
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch {
+    /* fire-and-forget: a Supabase outage or a not-yet-created table must never break chat */
+  }
+  return { status: 204, body: {} };
+}
+
 module.exports = {
   hasKey,
   trimmed,
@@ -696,4 +758,5 @@ module.exports = {
   geocodeHandler,
   resolveHandler,
   routeHandler,
+  logHandler,
 };

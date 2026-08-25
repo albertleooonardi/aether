@@ -67,6 +67,24 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (req.method === 'POST' && pathname === '/api/log') {
+    let raw = '';
+    req.on('data', (c) => (raw += c));
+    req.on('end', async () => {
+      let body;
+      try {
+        body = JSON.parse(raw || '{}');
+      } catch {
+        body = {};
+      }
+      // Fire-and-forget: logHandler swallows its own failures, always 204.
+      await core.logHandler(body);
+      res.writeHead(204);
+      res.end();
+    });
+    return;
+  }
+
   json(res, 404, { error: 'not_found' });
 });
 
