@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { MapPin, Flag, Clock, Route as RouteIcon, Maximize2 } from 'lucide-react';
-import { LEVEL, segmentsOf } from '../../utils/RouteLevels';
+import { LEVEL, ALT_ROUTE_COLOR, segmentsOf } from '../../utils/RouteLevels';
 import { enableSmoothWheelZoom } from '../../utils/SmoothZoom';
 
 // RainViewer's free radar tiles only exist up to z7; above that it serves a
@@ -53,7 +53,14 @@ const ChatRouteMap = ({ data, onOpenInMap }) => {
     });
     mapRef.current = map;
 
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 19 }).addTo(map);
+    // CARTO now requires an API key and serves a watermarked tile without erroring;
+    // Esri's Dark Gray Canvas is the keyless replacement. Path is {z}/{y}/{x}, and
+    // coverage stops at z16 over Indonesia — hence maxNativeZoom, so Leaflet upscales
+    // rather than tiling the map with "Map data not yet available" placeholders.
+    L.tileLayer(
+      'https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',
+      { maxZoom: 19, maxNativeZoom: 16, attribution: 'Esri · © OpenStreetMap contributors' }
+    ).addTo(map);
 
     // Radar overlay (best-effort; may be unavailable on some networks).
     (async () => {
@@ -99,15 +106,18 @@ const ChatRouteMap = ({ data, onOpenInMap }) => {
     // Alternatives first so the selected route always sits on top.
     data.routes.forEach((r, i) => {
       if (i === selected) return;
-      L.polyline(r.coordinates, { color: '#94a3b8', weight: 3, opacity: 0.35, lineJoin: 'round' }).addTo(group);
+      L.polyline(r.coordinates, { color: ALT_ROUTE_COLOR, weight: 3, opacity: 0.35, lineJoin: 'round' }).addTo(group);
     });
 
     // The selected route, one coloured stretch per sampled chunk. Chunks share a
     // boundary vertex, so the pieces join seamlessly.
     const sel = data.routes[selected];
     segmentsOf(sel).forEach((s) => {
+      const lvl = LEVEL[s.level] || LEVEL.unknown;
       const line = L.polyline(sel.coordinates.slice(s.from, s.to + 1), {
-        color: (LEVEL[s.level] || LEVEL.unknown).color,
+        color: lvl.stroke,
+        // "No data" also breaks the line, so absence is never colour-alone.
+        ...(lvl.dashed ? { dashArray: '7 9' } : {}),
         weight: 6,
         opacity: 0.95,
         lineJoin: 'round',
@@ -178,7 +188,7 @@ const ChatRouteMap = ({ data, onOpenInMap }) => {
             >
               <span
                 className="h-2.5 w-2.5 shrink-0 rounded-full"
-                style={{ background: isSelected ? lv.color : '#94a3b8' }}
+                style={{ background: isSelected ? lv.ink : ALT_ROUTE_COLOR }}
               />
               <RouteIcon size={12} className="shrink-0" />
               <span className="flex-1 truncate">
@@ -188,7 +198,7 @@ const ChatRouteMap = ({ data, onOpenInMap }) => {
               <span>{Math.round(r.durationMin)} min</span>
               <span
                 className="ml-1 shrink-0 rounded-full px-1.5 py-0.5 text-[10px]"
-                style={{ background: `${lv.color}22`, color: lv.color }}
+                style={{ background: `${lv.ink}22`, color: lv.ink }}
               >
                 {lv.label}
               </span>
@@ -202,7 +212,7 @@ const ChatRouteMap = ({ data, onOpenInMap }) => {
             <span>Along the road:</span>
             {legend.map((l) => (
               <span key={l} className="flex items-center gap-1">
-                <span className="h-1.5 w-3 rounded-full" style={{ background: (LEVEL[l] || LEVEL.unknown).color }} />
+                <span className="h-1.5 w-3 rounded-full" style={{ background: (LEVEL[l] || LEVEL.unknown).ink }} />
                 {(LEVEL[l] || LEVEL.unknown).label}
               </span>
             ))}

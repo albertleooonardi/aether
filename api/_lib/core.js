@@ -73,6 +73,11 @@ Rules:
 - Answer from APP WEATHER DATA whenever the question is about the loaded location
   and it covers the timeframe; call get_weather for anything it doesn't cover.
   Never invent numbers you weren't given.
+- "here", "my place", "my location", "this city", and any question naming no place
+  all mean the LOADED city in APP WEATHER DATA. Whenever that data is present you
+  already know where "here" is — never ask the user what city they are in. If one
+  message uses both, "there" is the place most recently discussed and "here" is the
+  loaded city; answer the comparison directly instead of asking which is which.
 - The app can also render rich route maps ("route from A to B") and set reminders
   ("remind me to bring an umbrella at 5pm"). Mention those phrasings when helpful.
 - You may explain general weather knowledge (what UV index means, dew point comfort,
@@ -747,6 +752,90 @@ async function logHandler(body) {
   return { status: 204, body: {} };
 }
 
+/* ---------------- chat memory (Supabase, durable conversation) ---------------- */
+// chat_messages (supabase/migrations/0002) is the opposite of chat_log above:
+// full conversation content — role + text only, no card/route/choice payload —
+// keyed to a stable per-browser client_id so the thread survives a closed tab
+// or a new session and the LLM gets its context back. Same degrade contract as
+// logHandler: missing env vars, a not-yet-created table, or a network error
+// must never surface to the chat UI or block a reply.
+const CHAT_MEMORY_TEXT_MAX = 2000;
+const CHAT_MEMORY_LIMIT = 50;
+
+async function chatMemoryWriteHandler(body) {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) return { status: 204, body: {} };
+  const b = body || {};
+  const clientId = typeof b.client_id === 'string' ? b.client_id.trim() : '';
+  const role = b.role === 'assistant' ? 'assistant' : b.role === 'user' ? 'user' : null;
+  const text = typeof b.text === 'string' ? b.text.slice(0, CHAT_MEMORY_TEXT_MAX) : '';
+  // Nothing worth writing — same no-op as an unconfigured backend, not an error.
+  if (!clientId || !role || !text) return { status: 204, body: {} };
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/chat_messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+        Prefer: 'return=minimal',
+      },
+      body: JSON.stringify({ client_id: clientId, role, text }),
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch {
+    /* fire-and-forget: a Supabase outage or a not-yet-created table must never break chat */
+  }
+  return { status: 204, body: {} };
+}
+
+// Most recent CHAT_MEMORY_LIMIT rows, oldest-first (the order a transcript
+// replays in, and the order askAI's history expects). Any failure — no env,
+// missing table, bad network — degrades to "nothing to hydrate", never an
+// error the caller has to handle differently from an empty history.
+async function chatMemoryReadHandler(clientId) {
+  const id = typeof clientId === 'string' ? clientId.trim() : '';
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY || !id) return { status: 200, body: { messages: [] } };
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/chat_messages?client_id=eq.${encodeURIComponent(id)}&select=role,text&order=ts.desc&limit=${CHAT_MEMORY_LIMIT}`,
+      {
+        headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` },
+        signal: AbortSignal.timeout(5000),
+      }
+    );
+    if (!res.ok) return { status: 200, body: { messages: [] } };
+    const rows = await res.json();
+    if (!Array.isArray(rows)) return { status: 200, body: { messages: [] } };
+    // PostgREST gave us newest-first (so LIMIT keeps the recent tail, not the
+    // oldest rows) — flip it before handing back to the caller.
+    return { status: 200, body: { messages: rows.reverse().map((r) => ({ role: r.role, text: r.text })) } };
+  } catch {
+    return { status: 200, body: { messages: [] } };
+  }
+}
+
+// The server side of the Trash button — "delete my data" has to actually
+// delete the durable copy, not just the localStorage one. Scoped to one
+// client_id; never touches another browser's rows.
+async function chatMemoryDeleteHandler(clientId) {
+  const id = typeof clientId === 'string' ? clientId.trim() : '';
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY || !id) return { status: 204, body: {} };
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/chat_messages?client_id=eq.${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: {
+        apikey: SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+        Prefer: 'return=minimal',
+      },
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch {
+    /* fire-and-forget: same degrade contract as the write/read paths */
+  }
+  return { status: 204, body: {} };
+}
+
 module.exports = {
   hasKey,
   trimmed,
@@ -759,4 +848,7 @@ module.exports = {
   resolveHandler,
   routeHandler,
   logHandler,
+  chatMemoryWriteHandler,
+  chatMemoryReadHandler,
+  chatMemoryDeleteHandler,
 };

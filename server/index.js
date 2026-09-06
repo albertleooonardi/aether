@@ -18,7 +18,7 @@ const json = (res, code, obj) => {
 const server = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, GET, DELETE, OPTIONS');
   if (req.method === 'OPTIONS') return json(res, 204, {});
 
   let pathname = req.url;
@@ -79,6 +79,34 @@ const server = http.createServer((req, res) => {
       }
       // Fire-and-forget: logHandler swallows its own failures, always 204.
       await core.logHandler(body);
+      res.writeHead(204);
+      res.end();
+    });
+    return;
+  }
+
+  if (req.method === 'GET' && pathname === '/api/chat-memory') {
+    return core
+      .chatMemoryReadHandler(params.client_id)
+      .then(({ status, body }) => json(res, status, body));
+  }
+  if (req.method === 'DELETE' && pathname === '/api/chat-memory') {
+    return core
+      .chatMemoryDeleteHandler(params.client_id)
+      .then(({ status, body }) => json(res, status, body));
+  }
+  if (req.method === 'POST' && pathname === '/api/chat-memory') {
+    let raw = '';
+    req.on('data', (c) => (raw += c));
+    req.on('end', async () => {
+      let body;
+      try {
+        body = JSON.parse(raw || '{}');
+      } catch {
+        body = {};
+      }
+      // Fire-and-forget: chatMemoryWriteHandler swallows its own failures, always 204.
+      await core.chatMemoryWriteHandler(body);
       res.writeHead(204);
       res.end();
     });

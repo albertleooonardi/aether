@@ -1,4 +1,4 @@
-import { coordsFromMapsUrl, geocodeCandidates } from './GeoService';
+import { coordsFromMapsUrl, geocodeCandidates, photonSuggest, createSuggestTypeahead, pickIsCurrent } from './GeoService';
 
 describe('coordsFromMapsUrl', () => {
   test.each([
@@ -24,16 +24,18 @@ describe('coordsFromMapsUrl', () => {
   });
 });
 
-describe('geocodeCandidates', () => {
-  const photon = (feats) => ({
-    ok: true,
-    json: async () => ({ features: feats }),
-  });
-  const feat = (name, lat, lon) => ({
-    properties: { name, city: 'Jakarta', country: 'Indonesia' },
-    geometry: { coordinates: [lon, lat] },
-  });
+// Shared Photon response fixtures — used by both the full geocodeCandidates
+// chain and the Photon-only suggestion path below.
+const photon = (feats) => ({
+  ok: true,
+  json: async () => ({ features: feats }),
+});
+const feat = (name, lat, lon) => ({
+  properties: { name, city: 'Jakarta', country: 'Indonesia' },
+  geometry: { coordinates: [lon, lat] },
+});
 
+describe('geocodeCandidates', () => {
   afterEach(() => jest.restoreAllMocks());
 
   test('returns the proxy candidate list', async () => {
@@ -172,5 +174,178 @@ describe('geocodeCandidates', () => {
     const out = await geocodeCandidates('Monas', null, 6);
     expect(out).toHaveLength(1);
     expect(out[0].name).toBe('Monas');
+  });
+});
+
+describe('photonSuggest', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  test('shapes results the same way as geocodeCandidates, via fromPhoton', async () => {
+    global.fetch = jest.fn().mockResolvedValueOnce(photon([feat('Pontianak', -0.0263, 109.3425)]));
+
+    const out = await photonSuggest('pontianak', null);
+    expect(out).toEqual([{ name: 'Pontianak', label: 'Pontianak, Jakarta, Indonesia', lat: -0.0263, lon: 109.3425 }]);
+  });
+
+  // The hard constraint: autocomplete-style querying is against Nominatim's
+  // usage policy, so as-you-type must only ever reach Photon.
+  test('calls Photon directly and nothing else', async () => {
+    global.fetch = jest.fn().mockResolvedValueOnce(photon([]));
+
+    await photonSuggest('pontianak', null);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(global.fetch.mock.calls[0][0]).toMatch(/^https:\/\/photon\.komoot\.io\/api\?/);
+  });
+
+  test('a failed request returns empty rather than throwing', async () => {
+    global.fetch = jest.fn().mockRejectedValueOnce(new Error('network down'));
+
+    await expect(photonSuggest('pontianak', null)).resolves.toEqual([]);
+  });
+
+  test('an aborted request resolves quietly rather than throwing', async () => {
+    global.fetch = jest.fn(
+      (url, opts) =>
+        new Promise((_, reject) => {
+          opts.signal.addEventListener('abort', () =>
+            reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+          );
+        })
+    );
+    const controller = new AbortController();
+    const pending = photonSuggest('pontianak', null, controller.signal);
+    controller.abort();
+
+    await expect(pending).resolves.toEqual([]);
+  });
+});
+
+describe('pickIsCurrent', () => {
+  const pick = { text: 'Central Park, Jakarta Selatan', place: { name: 'Central Park', lat: -6.177, lon: 106.791 } };
+
+  test('a stored pick is trusted while the field still reads exactly what it produced', () => {
+    expect(pickIsCurrent(pick, 'Central Park, Jakarta Selatan')).toBe(true);
+  });
+
+  // Picking "Central Park, Jakarta Selatan" and then editing the text down to
+  // plain "Central Park" must not silently keep routing to the picked pin —
+  // that string alone could just as well mean a different Central Park.
+  test('an edit after picking invalidates the pick', () => {
+    expect(pickIsCurrent(pick, 'Central Park')).toBe(false);
+  });
+
+  test('no pick at all is never current', () => {
+    expect(pickIsCurrent(null, 'Central Park, Jakarta Selatan')).toBe(false);
+  });
+
+  test('tolerates incidental surrounding whitespace in the field', () => {
+    expect(pickIsCurrent(pick, '  Central Park, Jakarta Selatan  ')).toBe(true);
+  });
+});
+
+describe('createSuggestTypeahead', () => {
+  // Fake timers pause the debounce, but the awaited fetch chain inside it still
+  // resolves on real microtasks — flush those explicitly after each advance.
+  const flush = async () => {
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+  };
+
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+
+  test('does not fire below the 3-character minimum', () => {
+    jest.useFakeTimers();
+    global.fetch = jest.fn();
+    const cb = jest.fn();
+
+    createSuggestTypeahead().run('po', null, cb);
+    jest.advanceTimersByTime(1000);
+
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(cb).toHaveBeenCalledWith([]); // cleared immediately, not after the debounce
+  });
+
+  test('debounce collapses rapid keystrokes into a single request', async () => {
+    jest.useFakeTimers();
+    global.fetch = jest.fn().mockResolvedValue(photon([]));
+    const typeahead = createSuggestTypeahead();
+    const cb = jest.fn();
+
+    typeahead.run('pon', null, cb);
+    jest.advanceTimersByTime(100);
+    typeahead.run('pont', null, cb);
+    jest.advanceTimersByTime(100);
+    typeahead.run('ponti', null, cb);
+    jest.advanceTimersByTime(300); // only now has 300ms of silence passed
+    await flush();
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(global.fetch.mock.calls[0][0]).toContain(encodeURIComponent('ponti'));
+  });
+
+  // The bug that makes naive typeahead feel broken: a slow response for an
+  // earlier keystroke landing after a later, faster one and clobbering it.
+  test('discards an out-of-order response in favour of the newer query', async () => {
+    jest.useFakeTimers();
+    const resolvers = [];
+    global.fetch = jest.fn(() => new Promise((resolve) => resolvers.push(resolve)));
+    const typeahead = createSuggestTypeahead();
+    const cb = jest.fn();
+
+    typeahead.run('pon', null, cb);
+    jest.advanceTimersByTime(300);
+    await flush();
+    typeahead.run('pontianak', null, cb);
+    jest.advanceTimersByTime(300);
+    await flush();
+    expect(resolvers).toHaveLength(2);
+
+    // Newer query's response arrives first, the stale one straggles in after.
+    resolvers[1](photon([feat('Pontianak', -0.02, 109.34)]));
+    await flush();
+    resolvers[0](photon([feat('Pondok Indah', -6.28, 106.78)]));
+    await flush();
+
+    expect(cb).toHaveBeenCalledTimes(1);
+    expect(cb).toHaveBeenCalledWith([expect.objectContaining({ name: 'Pontianak' })]);
+  });
+
+  test('aborts the in-flight request the instant a newer query supersedes it', async () => {
+    jest.useFakeTimers();
+    const signals = [];
+    global.fetch = jest.fn((url, opts) => {
+      signals.push(opts.signal);
+      return new Promise(() => {}); // never settles — only the abort matters here
+    });
+    const typeahead = createSuggestTypeahead();
+
+    typeahead.run('pon', null, jest.fn());
+    jest.advanceTimersByTime(300);
+    await flush();
+    expect(signals).toHaveLength(1);
+    expect(signals[0].aborted).toBe(false);
+
+    typeahead.run('pontianak', null, jest.fn());
+    expect(signals[0].aborted).toBe(true); // aborted before the new debounce even elapses
+  });
+
+  test('cancel() silences a response already in flight', async () => {
+    jest.useFakeTimers();
+    let resolveFetch;
+    global.fetch = jest.fn(() => new Promise((resolve) => (resolveFetch = resolve)));
+    const typeahead = createSuggestTypeahead();
+    const cb = jest.fn();
+
+    typeahead.run('pontianak', null, cb);
+    jest.advanceTimersByTime(300);
+    await flush();
+    typeahead.cancel(); // e.g. a place was just selected, or the input was cleared
+
+    resolveFetch(photon([feat('Pontianak', -0.02, 109.34)]));
+    await flush();
+
+    expect(cb).not.toHaveBeenCalled();
   });
 });

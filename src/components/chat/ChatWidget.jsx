@@ -1,11 +1,11 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { MessageCircle, X, Send, Bell, Sparkles, RotateCw } from 'lucide-react';
+import { MessageCircle, X, Send, Bell, Sparkles, RotateCw, Trash2 } from 'lucide-react';
 import { parseReminder, answer, formatClock } from '../../chat/assistant';
 import { parseNavigation, parseWeatherIn, parseMapsUrl, parseFollowUp } from '../../chat/intents';
 import { fetchWeatherByCity } from '../../services/WeatherService';
 import { geocode, geocodeCandidates, resolveMapsUrl } from '../../services/GeoService';
 import { getRoutesWithRain } from '../../services/RouteService';
-import { askAI, checkStatus, logTurn } from '../../services/AetherAI';
+import { askAI, checkStatus, logTurn, saveMessage, fetchMemory, deleteMemory } from '../../services/AetherAI';
 import RichText from './RichText';
 import WeatherReplyCard from './WeatherReplyCard';
 import ChatRouteMap from './ChatRouteMap';
@@ -22,6 +22,71 @@ const loadReminders = () => {
 const persist = (rems) => {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(rems));
+  } catch {
+    /* ignore */
+  }
+};
+
+// The intro message is shown whenever there's no stored transcript to
+// restore — kept as a constant so "clear chat" can put the widget back in
+// exactly this state.
+const INTRO_MESSAGE = {
+  id: 'intro',
+  role: 'assistant',
+  text:
+    "Hi, I'm **AetherAI** — your weather companion. Try:\n• **“Weather in Surabaya”** — conditions anywhere\n• **“Route from my place to Grand Indonesia, will it rain?”** — I'll map it and find the driest way\n• **“What should I wear today?”** or **“Remind me to grab an umbrella at 5pm”**",
+};
+
+const CHAT_STORAGE_KEY = 'vrijeme.chat.v1';
+// Keep the stored transcript well clear of the ~5MB localStorage budget.
+const MAX_STORED_MESSAGES = 50;
+
+// Messages can carry a 'weather'/'route'/'choice' payload (a live card, map,
+// or picker). None of that survives a refresh meaningfully — weather/route
+// data goes stale, and a picker's onPick handler lives in `pending.current`,
+// which is gone — so only the plain text/role is ever persisted or restored.
+export const stripExtras = (msgs) => msgs.map(({ id, role, text }) => ({ id, role, text }));
+
+export const loadChat = () => {
+  try {
+    const raw = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY));
+    if (!Array.isArray(raw)) return null;
+    return stripExtras(raw);
+  } catch {
+    return null;
+  }
+};
+
+export const saveChat = (msgs) => {
+  try {
+    localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(stripExtras(msgs).slice(-MAX_STORED_MESSAGES)));
+  } catch {
+    /* ignore */
+  }
+};
+
+// localStorage is the fast path; the Supabase-backed server transcript
+// (fetchMemory) is the durable layer behind it, reconciled in on mount
+// rather than trusted blindly — a fresh tab/browser whose localStorage never
+// had this conversation must not stomp on a longer transcript already on
+// screen. `current` is whatever's rendered right now (either the intro
+// placeholder or a restored/live transcript); `serverMsgs` is oldest-first
+// { role, text }. Picks whichever side is longer; never mutates or deletes
+// anything server-side, so a short-lived local session can't cause
+// server-side data loss even across the two-tab race the write effect
+// already has (see saveChat's write effect comment).
+export const reconcileChat = (current, serverMsgs) => {
+  if (!Array.isArray(serverMsgs) || !serverMsgs.length) return current;
+  // The untouched intro placeholder isn't real history to protect — treat
+  // it as empty so real server content still hydrates in over it.
+  const localCount = current.length === 1 && current[0].id === 'intro' ? 0 : current.length;
+  if (serverMsgs.length <= localCount) return current;
+  return serverMsgs.map((m, i) => ({ id: `server-${i}-${Date.now()}`, role: m.role, text: m.text }));
+};
+
+export const clearChat = () => {
+  try {
+    localStorage.removeItem(CHAT_STORAGE_KEY);
   } catch {
     /* ignore */
   }
@@ -77,14 +142,10 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
-  const [messages, setMessages] = useState([
-    {
-      id: 'intro',
-      role: 'assistant',
-      text:
-        "Hi, I'm **AetherAI** — your weather companion. Try:\n• **“Weather in Surabaya”** — conditions anywhere\n• **“Route from my place to Grand Indonesia, will it rain?”** — I'll map it and find the driest way\n• **“What should I wear today?”** or **“Remind me to grab an umbrella at 5pm”**",
-    },
-  ]);
+  const [messages, setMessages] = useState(() => {
+    const stored = loadChat();
+    return stored && stored.length ? stored : [INTRO_MESSAGE];
+  });
   const [reminders, setReminders] = useState(loadReminders);
   // 'checking' | 'online' | 'basic' | 'offline'
   const [status, setStatus] = useState('checking');
@@ -171,13 +232,58 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
     };
   };
 
-  const say = (role, text, extra = {}) =>
+  // The one choke point every user/assistant turn passes through — hooking
+  // the durable-memory write here (role + text only, same as stripExtras)
+  // covers reminders, rich cards, and AI replies without touching every
+  // call site individually.
+  const say = (role, text, extra = {}) => {
     setMessages((m) => [...m, { id: `${Date.now()}-${Math.random()}`, role, text, ...extra }]);
+    saveMessage(role, text);
+  };
   const sayAssistant = (text, extra) => say('assistant', text, extra);
 
   useEffect(() => {
     if (open) logEnd.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, open, busy]);
+
+  // Persist on every change so a refresh restores the conversation instead of
+  // starting cold — extras (weather/route/choice payloads) are stripped by
+  // saveChat itself, not just on the way back in.
+  useEffect(() => {
+    saveChat(messages);
+  }, [messages]);
+
+  // localStorage is the fast path (painted synchronously from the initial
+  // state above); Supabase is the durable layer behind it, fetched once on
+  // mount and reconciled via reconcileChat rather than blindly trusted — see
+  // that function for why a shorter side never overwrites a longer one.
+  useEffect(() => {
+    let cancelled = false;
+    fetchMemory().then((serverMsgs) => {
+      if (cancelled) return;
+      setMessages((current) => reconcileChat(current, serverMsgs));
+    });
+    return () => {
+      cancelled = true;
+    };
+    // Mount-only: this reconciles the server copy in once, it doesn't
+    // re-run every time `messages` changes (that would fight the writes
+    // this same tab is making).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Once a transcript persists on disk it's a record of where the user's
+  // been and where they were going — give them a way to delete it. Slots
+  // that reference geocoded/in-flight state don't survive a refresh anyway,
+  // so clear them too rather than leave them stale. The Trash button implies
+  // the durable copy is gone too, not just localStorage.
+  const clearConversation = () => {
+    clearChat();
+    deleteMemory();
+    setMessages([INTRO_MESSAGE]);
+    lastIntent.current = null;
+    pending.current = null;
+  };
 
   const fireReminder = useCallback((rem) => {
     say('assistant', `⏰ **Reminder:** ${rem.label}`);
@@ -595,6 +701,15 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
                 <Bell size={12} /> {activeCount}
               </span>
             )}
+            {/* The transcript now persists to disk, so give a way to delete it. */}
+            <button
+              onClick={clearConversation}
+              aria-label="Clear chat"
+              title="Clear chat"
+              className="flex h-8 w-8 items-center justify-center rounded-lg text-ink/55 transition-colors hover:bg-ink/10 hover:text-ink"
+            >
+              <Trash2 size={16} />
+            </button>
             {/* On phones the sheet covers the floating toggle — close lives here. */}
             <button
               onClick={() => setOpen(false)}

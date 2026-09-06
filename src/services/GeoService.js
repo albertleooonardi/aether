@@ -199,3 +199,74 @@ export const geocodeCandidates = async (query, near, limit = MAX_CANDIDATES) => 
 };
 
 export const geocode = async (query, near) => (await geocodeCandidates(query, near, 1))[0] || null;
+
+/* ---------------- as-you-type suggestions ---------------- */
+
+// As-you-type suggestions must never reach Nominatim: its usage policy
+// prohibits autocomplete-style querying, and a request per keystroke risks
+// getting the app's Vercel IPs blocked, which would break the explicit search
+// too. Photon is already called straight from the browser as source #2 above,
+// so this reuses that same direct call rather than growing the backend proxy
+// with a "suggest-only" mode — Photon is built for exactly this use case.
+const SUGGEST_LIMIT = 6;
+
+export const photonSuggest = async (query, near, signal) => {
+  const atLatLon = biased(near) ? `&lat=${near.lat}&lon=${near.lon}` : '';
+  try {
+    const res = await fetch(
+      `${PHOTON}?q=${encodeURIComponent(query)}&limit=${PROVIDER_LIMIT}&lang=en${atLatLon}`,
+      { signal }
+    );
+    if (!res.ok) return [];
+    const found = ((await res.json()).features || []).map(fromPhoton).filter(Boolean);
+    return dedupe(found).slice(0, SUGGEST_LIMIT);
+  } catch {
+    // Network failure or an aborted (superseded) request — either way stay
+    // silent here; only the explicit submit search reports errors.
+    return [];
+  }
+};
+
+// A suggestion click stores the picked place alongside the exact text it wrote
+// into the field. If the user edits that text afterward, the picked pin may no
+// longer be what the (now different) string describes, so a caller about to
+// trust a stored pick must first confirm the field still reads exactly what
+// the pick produced — otherwise a stale pin outlives the text it came from.
+export const pickIsCurrent = (pick, text) => !!pick && pick.text === (text ?? '').trim();
+
+const MIN_SUGGEST_LEN = 3;
+const SUGGEST_DEBOUNCE_MS = 300;
+
+// Owns the debounce + cancellation so the component doesn't have to: a slow
+// response for "pon" must never land after — and overwrite — the list for
+// "pontianak". Every call aborts whatever request is still in flight *and*
+// stamps a sequence number, so even a response that slips past the abort
+// (e.g. a fetch that ignores its signal) is still discarded once it's stale.
+export const createSuggestTypeahead = ({ minLength = MIN_SUGGEST_LEN, debounceMs = SUGGEST_DEBOUNCE_MS } = {}) => {
+  let timer = null;
+  let controller = null;
+  let seq = 0;
+
+  const cancel = () => {
+    clearTimeout(timer);
+    controller?.abort();
+    seq += 1;
+  };
+
+  const run = (query, near, onResult) => {
+    cancel();
+    const text = (query || '').trim();
+    if (text.length < minLength) {
+      onResult([]);
+      return;
+    }
+    const mySeq = seq;
+    timer = setTimeout(async () => {
+      controller = new AbortController();
+      const list = await photonSuggest(text, near, controller.signal);
+      if (mySeq === seq) onResult(list);
+    }, debounceMs);
+  };
+
+  return { run, cancel };
+};

@@ -14,11 +14,17 @@ import {
   Umbrella,
   Crosshair,
 } from 'lucide-react';
-import { LEVEL, segmentsOf } from '../../utils/RouteLevels';
+import { LEVEL, ALT_ROUTE_COLOR, segmentsOf } from '../../utils/RouteLevels';
 import { enableSmoothWheelZoom } from '../../utils/SmoothZoom';
 import { getWeatherIcon } from '../../utils/WeatherIcons';
 import { fetchWeatherByCoords } from '../../services/WeatherService';
-import { geocode, geocodeCandidates, resolveMapsUrl } from '../../services/GeoService';
+import {
+  geocode,
+  geocodeCandidates,
+  resolveMapsUrl,
+  createSuggestTypeahead,
+  pickIsCurrent,
+} from '../../services/GeoService';
 import { parseMapsUrl } from '../../chat/intents';
 import { getRoutesWithRain } from '../../services/RouteService';
 
@@ -79,12 +85,27 @@ const toDetail = (data) => {
  * time you'd actually drive it. The chat can push a route it computed straight
  * onto this map via `initialRoute`.
  */
-// CARTO ships matching light/dark basemaps, so the map flips with the app
-// instead of staying a dark slab on a light page.
+// The basemap ships in matching light/dark variants, so the map flips with the
+// app instead of staying a dark slab on a light page.
+//
+// CARTO put their basemaps behind an API key and now serve an "API KEY REQUIRED"
+// watermark as the tile itself — with HTTP 200, so nothing errors, the map just
+// reads as broken. Esri's Gray Canvas is the keyless replacement and has both a
+// dark and a light variant, so the theme switch below still works.
+//
+// Two gotchas vs CARTO: the path is {z}/{y}/{x} (row before column), and there
+// is no {r}/@2x retina tile.
+const ESRI = 'https://services.arcgisonline.com/ArcGIS/rest/services/Canvas';
 const BASEMAP = {
-  dark: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-  light: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+  dark: `${ESRI}/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}`,
+  light: `${ESRI}/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}`,
 };
+// The service advertises LODs 0–23, but real coverage over Indonesia stops at 16
+// — past that it returns a light-grey "Map data not yet available" placeholder,
+// which is far more jarring in a dark UI than an upscaled tile. Same maxNativeZoom
+// treatment the radar layer already gets below.
+const BASEMAP_MAX_NATIVE_ZOOM = 16;
+const BASEMAP_ATTRIBUTION = 'Esri · HERE · Garmin · © OpenStreetMap contributors';
 
 const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRouteShown }) => {
   const el = useRef(null);
@@ -95,6 +116,17 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
   const radarUrl = useRef(null);
   const baseLayer = useRef(null);
   const detailRef = useRef(null); // latest openDetail, for Leaflet handlers
+  const typeahead = useRef(createSuggestTypeahead()).current; // Explore box as-you-type (Photon only)
+  // Origin and destination each need their own debounce/AbortController — a
+  // shared instance would let typing in one field cancel an in-flight lookup
+  // for the other.
+  const originTypeahead = useRef(createSuggestTypeahead()).current;
+  const destTypeahead = useRef(createSuggestTypeahead()).current;
+  // The place picked from a suggestion, kept next to the exact text it wrote
+  // into the field (see pickIsCurrent) so submit can use the chosen pin
+  // instead of re-geocoding the string — and so an edit after picking drops it.
+  const originPick = useRef(null); // { text, place } | null
+  const destPick = useRef(null);
 
   const [ready, setReady] = useState(!!window.L);
   const [radarOn, setRadarOn] = useState(true);
@@ -102,7 +134,7 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
   const [q, setQ] = useState('');
   const [originText, setOriginText] = useState('');
   const [destText, setDestText] = useState('');
-  const [cands, setCands] = useState(null); // { kind: 'explore'|'dest', list, origin? }
+  const [cands, setCands] = useState(null); // { kind: 'explore'|'origin'|'dest-suggest'|'dest', list, origin? }
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [detail, setDetail] = useState(null); // { loading, place, wx }
@@ -121,6 +153,17 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
     }, 200);
     return () => clearInterval(id);
   }, []);
+
+  // A tab switch or unmount must not leave a debounced Photon request free to
+  // resolve later and stamp stale suggestions onto whatever's on screen next.
+  useEffect(
+    () => () => {
+      typeahead.cancel();
+      originTypeahead.cancel();
+      destTypeahead.cancel();
+    },
+    [typeahead, originTypeahead, destTypeahead]
+  );
 
   useEffect(() => {
     const L = window.L;
@@ -143,7 +186,8 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
 
     baseLayer.current = L.tileLayer(BASEMAP[theme] || BASEMAP.dark, {
       maxZoom: 19,
-      attribution: '© OpenStreetMap · © CARTO',
+      maxNativeZoom: BASEMAP_MAX_NATIVE_ZOOM,
+      attribution: BASEMAP_ATTRIBUTION,
     }).addTo(map);
     L.control.zoom({ position: 'bottomright' }).addTo(map);
 
@@ -243,9 +287,54 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
   };
 
   const selectPlace = (place) => {
+    typeahead.cancel(); // a suggestion still in flight must not reopen the list post-selection
     setCands(null);
     mapRef.current?.flyTo([place.lat, place.lon], Math.max(mapRef.current.getZoom(), 11), { duration: 0.8 });
     openDetail(place);
+  };
+
+  // Explore box as-you-type: Photon only, debounced, and always superseded by
+  // whatever the user typed most recently — see createSuggestTypeahead.
+  const handleQueryChange = (e) => {
+    const value = e.target.value;
+    setQ(value);
+    typeahead.run(value, mapCenter(), (list) => setCands(list.length ? { kind: 'explore', list } : null));
+  };
+
+  // Directions inputs get the same as-you-type treatment, each on its own
+  // typeahead instance. Editing after a pick invalidates that pick immediately
+  // (rather than waiting for submit) so a stale pin never lingers behind
+  // text that no longer describes it.
+  const handleOriginChange = (e) => {
+    const value = e.target.value;
+    setOriginText(value);
+    if (!pickIsCurrent(originPick.current, value)) originPick.current = null;
+    originTypeahead.run(value, mapCenter(), (list) => setCands(list.length ? { kind: 'origin', list } : null));
+  };
+
+  const handleDestChange = (e) => {
+    const value = e.target.value;
+    setDestText(value);
+    if (!pickIsCurrent(destPick.current, value)) destPick.current = null;
+    destTypeahead.run(value, mapCenter(), (list) => setCands(list.length ? { kind: 'dest-suggest', list } : null));
+  };
+
+  // Picking a suggestion fills the field and remembers the exact place chosen —
+  // it must not run the route: the user may still be composing the trip (origin
+  // not set yet), and navigating on a single click while typing would surprise
+  // them. They confirm with the submit arrow, same as typing a full address.
+  const pickOrigin = (place) => {
+    originTypeahead.cancel(); // a suggestion still in flight must not reopen the list post-pick
+    originPick.current = { text: place.name, place };
+    setOriginText(place.name);
+    setCands(null);
+  };
+
+  const pickDest = (place) => {
+    destTypeahead.cancel();
+    destPick.current = { text: place.name, place };
+    setDestText(place.name);
+    setCands(null);
   };
 
   // A pasted Google Maps link is an exact spot — no geocoding, no guessing. It's
@@ -268,6 +357,7 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
     e.preventDefault();
     const text = q.trim();
     if (!text || busy) return;
+    typeahead.cancel(); // the explicit search chain now owns `cands`
     setBusy(true);
     setError('');
     try {
@@ -310,14 +400,21 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
     if (busy) return;
     const destQ = destText.trim();
     if (!destQ) return;
+    originTypeahead.cancel(); // the explicit submit chain now owns `cands`
+    destTypeahead.cancel();
     setBusy(true);
     setError('');
     try {
       const originQ = originText.trim();
+      // A suggestion picked for this exact text beats re-geocoding it — the
+      // string alone can't tell "Central Park, Jakarta Selatan" apart from
+      // every other Central Park, but the pick already did.
+      const originFromPick = pickIsCurrent(originPick.current, originText) ? originPick.current.place : null;
       // Either endpoint can be a pasted link.
-      const originPin = originQ ? await resolveInput(originQ) : null;
+      const originPin = !originFromPick && originQ ? await resolveInput(originQ) : null;
       if (originPin?.failed) return;
       const originLoc =
+        originFromPick ||
         originPin ||
         (originQ
           ? await geocode(originQ, mapCenter())
@@ -329,6 +426,9 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
           originQ ? NOT_FOUND(originQ) : 'Type a starting point (or search a city on the Weather page first).'
         );
       }
+
+      const destFromPick = pickIsCurrent(destPick.current, destText) ? destPick.current.place : null;
+      if (destFromPick) return await runRoute(originLoc, destFromPick);
 
       const destPin = await resolveInput(destQ);
       if (destPin?.failed) return;
@@ -374,7 +474,7 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
 
     route.routes.forEach((r, i) => {
       if (i === selRoute) return;
-      const alt = L.polyline(r.coordinates, { color: '#94a3b8', weight: 3, opacity: 0.35, lineJoin: 'round' });
+      const alt = L.polyline(r.coordinates, { color: ALT_ROUTE_COLOR, weight: 3, opacity: 0.35, lineJoin: 'round' });
       alt.on('click', () => setSelRoute(i));
       alt.addTo(group);
     });
@@ -382,7 +482,8 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
     const sel = route.routes[selRoute];
     segmentsOf(sel).forEach((s) => {
       const line = L.polyline(sel.coordinates.slice(s.from, s.to + 1), {
-        color: (LEVEL[s.level] || LEVEL.unknown).color,
+        color: (LEVEL[s.level] || LEVEL.unknown).stroke,
+        ...((LEVEL[s.level] || LEVEL.unknown).dashed ? { dashArray: '7 9' } : {}),
         weight: 6,
         opacity: 0.95,
         lineJoin: 'round',
@@ -445,6 +546,9 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
               <button
                 key={id}
                 onClick={() => {
+                  typeahead.cancel();
+                  originTypeahead.cancel();
+                  destTypeahead.cancel();
                   setMode(id);
                   setCands(null);
                   setError('');
@@ -462,7 +566,7 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
             <form onSubmit={handleExplore} className="flex items-center gap-2 p-2">
               <input
                 value={q}
-                onChange={(e) => setQ(e.target.value)}
+                onChange={handleQueryChange}
                 placeholder="Search a place or paste a Maps link…"
                 className="w-full rounded-xl bg-ink/5 px-3 py-2 text-base text-ink placeholder-ink/40 outline-none sm:text-sm"
               />
@@ -481,7 +585,7 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
                 <MapPin size={13} className="shrink-0 text-sky-300" />
                 <input
                   value={originText}
-                  onChange={(e) => setOriginText(e.target.value)}
+                  onChange={handleOriginChange}
                   placeholder={weather ? `From: ${weather.city}` : 'From…'}
                   className="w-full bg-transparent py-2 text-base text-ink placeholder-ink/40 outline-none sm:text-sm"
                 />
@@ -491,7 +595,7 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
                   <Flag size={13} className="shrink-0 text-orange-300" />
                   <input
                     value={destText}
-                    onChange={(e) => setDestText(e.target.value)}
+                    onChange={handleDestChange}
                     placeholder="To… (or a Maps link)"
                     className="w-full bg-transparent py-2 text-base text-ink placeholder-ink/40 outline-none sm:text-sm"
                   />
@@ -516,7 +620,15 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
               {cands.list.map((c) => (
                 <button
                   key={`${c.lat},${c.lon}`}
-                  onClick={() => (cands.kind === 'explore' ? selectPlace(c) : runRoute(cands.origin, c))}
+                  onClick={() => {
+                    // Explore and post-submit dest candidates commit immediately; the
+                    // as-you-type suggestions for the Directions inputs only fill the
+                    // field — see pickOrigin/pickDest for why.
+                    if (cands.kind === 'explore') return selectPlace(c);
+                    if (cands.kind === 'origin') return pickOrigin(c);
+                    if (cands.kind === 'dest-suggest') return pickDest(c);
+                    return runRoute(cands.origin, c); // kind === 'dest'
+                  }}
                   className="flex w-full items-start gap-2 rounded-xl px-2.5 py-2 text-left text-xs text-ink/75 transition hover:bg-ink/10 hover:text-ink"
                 >
                   <MapPin size={13} className="mt-0.5 shrink-0 text-ink/35" />
@@ -562,7 +674,7 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
                       isSel ? 'bg-ink/10 text-ink' : 'text-ink/55 hover:bg-ink/5 hover:text-ink/80'
                     }`}
                   >
-                    <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: isSel ? lv.color : '#94a3b8' }} />
+                    <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: isSel ? lv.ink : ALT_ROUTE_COLOR }} />
                     <RouteIcon size={12} className="shrink-0" />
                     <span className="flex-1 truncate">
                       {i === route.bestIndex ? 'Recommended' : `Option ${i + 1}`} · {r.distanceKm.toFixed(1)} km
@@ -571,7 +683,7 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
                     <span>{Math.round(r.durationMin)} min</span>
                     <span
                       className="ml-1 shrink-0 rounded-full px-1.5 py-0.5 text-[10px]"
-                      style={{ background: `${lv.color}22`, color: lv.color }}
+                      style={{ background: `${lv.ink}22`, color: lv.ink }}
                     >
                       {lv.label}
                     </span>
@@ -583,7 +695,7 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
                   <span>Along the road:</span>
                   {legend.map((l) => (
                     <span key={l} className="flex items-center gap-1">
-                      <span className="h-1.5 w-3 rounded-full" style={{ background: (LEVEL[l] || LEVEL.unknown).color }} />
+                      <span className="h-1.5 w-3 rounded-full" style={{ background: (LEVEL[l] || LEVEL.unknown).ink }} />
                       {(LEVEL[l] || LEVEL.unknown).label}
                     </span>
                   ))}
@@ -720,7 +832,7 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
           <span className="flex items-center gap-1.5">
             <span
               className="inline-block h-1.5 w-6 rounded-full"
-              style={{ background: `linear-gradient(90deg,${LEVEL.dry.color},${LEVEL.light.color},${LEVEL.wet.color})` }}
+              style={{ background: `linear-gradient(90deg,${LEVEL.dry.ink},${LEVEL.light.ink},${LEVEL.wet.ink})` }}
             />
             Route rain: dry → wet
           </span>
