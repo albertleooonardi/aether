@@ -7,6 +7,7 @@
 // traffic-aware routing provider would improve the timings without changing any
 // of the logic here.
 import { fetchForecastHours } from './WeatherService';
+import { upstreamSignal, ROUTE_PROXY_TIMEOUT_MS } from './config';
 
 // `annotations=duration` returns OSRM's own per-node timings, which is what makes
 // a real per-stretch ETA possible instead of assuming a constant speed.
@@ -27,16 +28,27 @@ const readOsrm = async (res) => {
 
 // Prefer the backend proxy (server-side, retried, no browser rate-limit); fall
 // back to calling the public OSRM demo directly if the backend isn't running.
+// The proxy call gets ROUTE_PROXY_TIMEOUT_MS, deliberately longer than the proxy's
+// own retry budget, so the direct fallback fires only when the proxy truly failed.
 const fetchOsrm = async (origin, dest) => {
   try {
-    const res = await fetch(`/api/route?from=${origin.lat},${origin.lon}&to=${dest.lat},${dest.lon}`);
+    const res = await fetch(`/api/route?from=${origin.lat},${origin.lon}&to=${dest.lat},${dest.lon}`, { signal: upstreamSignal(ROUTE_PROXY_TIMEOUT_MS) });
     const data = await res.json().catch(() => null);
     if (data && data.code) return data;
   } catch {
     /* backend down → fall back */
   }
   const url = `${OSRM}/${origin.lon},${origin.lat};${dest.lon},${dest.lat}?${OSRM_OPTS}`;
-  return readOsrm(await fetch(url));
+  // A timeout/abort (or network failure) rejects with a raw DOMException/TypeError;
+  // route it through the same coded 'unavailable' path as any other outage so the
+  // user never sees "The operation was aborted due to timeout".
+  let res;
+  try {
+    res = await fetch(url, { signal: upstreamSignal() });
+  } catch {
+    throw routeError('Routing service unavailable', 'unavailable');
+  }
+  return readOsrm(res);
 };
 
 const finite = (p) => p && Number.isFinite(p.lat) && Number.isFinite(p.lon);

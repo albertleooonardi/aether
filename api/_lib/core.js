@@ -52,6 +52,12 @@ data its cards render. Treat it as ground truth:
   number — for "later", "tonight", "this evening", "when should I leave" questions,
   and say WHEN (e.g. "rain picks up around 8 PM, 70%").
 - "forecast_days": the next days. Use these for "tomorrow" / "this weekend".
+- "displayed" (may be absent): what the user is looking at RIGHT NOW in the app.
+  "displayed.route" is the route card above the conversation — origin, destination,
+  when it was drawn, and "options", each a tappable row on that card (labels
+  "Recommended", "Option 2", … exactly as shown) with distance_km, duration_min and
+  rain (dry/light/wet). "displayed.reminders" are the user's pending reminders
+  (label + local due time). If it is missing, nothing relevant is on screen.
 
 TOOLS — you can call these for live data; prefer them over guessing or deflecting:
 - get_weather(location): live current + hourly + 3-day forecast for ANY place (or
@@ -66,10 +72,15 @@ TOOLS — you can call these for live data; prefer them over guessing or deflect
 - get_route(origin, destination): driving distance & time between two places plus
   the live forecast at the destination — use it for "rain on my way to X", travel
   planning, and "should I leave now or later" questions. If the user doesn't name
-  an origin, use the loaded city.
+  an origin, pass the loaded city's coordinates as "lat,lon" from APP WEATHER DATA
+  rather than its name — a bare city name can geocode to a same-named place far
+  away, and the app draws the route map from whatever this resolves to.
 
 Rules:
-- Be concise, warm and practical. Usually 1–3 sentences.
+- Be concise, warm and practical: prose in 1–3 short sentences. NEVER write labelled
+  field lists ("Route:", "Distance:", "Driving time:", "Rain outlook:") or a
+  "Bottom line:" summary — a labelled block is wrong for this app because the cards
+  already present structured data. Bold at most one key fact.
 - Answer from APP WEATHER DATA whenever the question is about the loaded location
   and it covers the timeframe; call get_weather for anything it doesn't cover.
   Never invent numbers you weren't given.
@@ -78,11 +89,18 @@ Rules:
   already know where "here" is — never ask the user what city they are in. If one
   message uses both, "there" is the place most recently discussed and "here" is the
   loaded city; answer the comparison directly instead of asking which is which.
-- The app can also render rich route maps ("route from A to B") and set reminders
-  ("remind me to bring an umbrella at 5pm"). Mention those phrasings when helpful.
+- A route map is drawn automatically for any routing question. NEVER tell the user
+  to rephrase to get one, and never offer "a map view" as though it were extra.
+- When "displayed.route" is present, do not restate its distance, duration or
+  endpoints — the user can see them. Answer what was ASKED about it. For "any other
+  routes?", name the alternatives from displayed.route.options and point at the rows
+  ("Option 2 is 36 km / 38 min and also dry — tap it on the card above").
+- Reminders need a phrasing ("remind me to bring an umbrella at 5pm"), so you may
+  suggest that when useful — but not when "displayed.reminders" already covers it.
+  Use that list to answer "what did I ask you to remind me about?".
 - You may explain general weather knowledge (what UV index means, dew point comfort,
   what an AQI level implies) and tie it back to the current numbers.
-- Use **bold** sparingly for the key fact.`;
+- Use **bold** sparingly: at most one key fact.`;
 
 const contextText = (context) =>
   context && context.location
@@ -221,10 +239,30 @@ async function geocodeOne(q, near) {
   return null;
 }
 
-async function toolRoute(originQ, destQ, context) {
+async function toolRoute(originQ, destQ, context, onRoute) {
   const loc = context && context.location;
   const near = loc && Number.isFinite(loc.lat) ? { lat: loc.lat, lon: loc.lon } : null;
-  const o = await geocodeOne(originQ, near);
+
+  // The loaded city's exact coordinates are already in APP WEATHER DATA, so
+  // geocoding its NAME is a lossy round trip — and a losing one: the model often
+  // passes "Ciater Udik" rather than "-6.3,106.65", and the geocoder has resolved
+  // that to a same-named road 700km away in East Java, which then draws a route
+  // map from entirely the wrong origin. Use the coordinates we already hold
+  // whenever the origin is omitted or is just the loaded city by name.
+  const named = (originQ || '').trim().toLowerCase();
+  const asCoords = coords(originQ);
+  // Now that the prompt asks for "lat,lon", the model usually sends exactly the
+  // loaded city's coordinates — which would otherwise label the route map
+  // "-6.3,106.65" instead of "Ciater Udik". Treat coordinates within ~1km of the
+  // loaded city as the loaded city, so the card shows a place name.
+  const nearLoaded =
+    near && asCoords && Math.abs(asCoords.lat - near.lat) < 0.01 && Math.abs(asCoords.lon - near.lon) < 0.01;
+  const isLoadedCity =
+    near && (!named || named === String(loc.city || '').toLowerCase() || nearLoaded);
+
+  const o = isLoadedCity
+    ? { name: loc.city, label: [loc.city, loc.region, loc.country].filter(Boolean).join(', '), ...near }
+    : await geocodeOne(originQ, near);
   if (!o) return { error: `could not find origin "${originQ}"` };
   const d = await geocodeOne(destQ, near || o);
   if (!d) return { error: `could not find destination "${destQ}"` };
@@ -237,6 +275,15 @@ async function toolRoute(originQ, destQ, context) {
   const r = data.routes[0];
   const durationMin = Math.round(r.duration / 60);
   const destWeather = await toolWeather(`${d.lat},${d.lon}`);
+  // Coordinates go to the collector only, never into the object below: the
+  // model has no use for lat/lon and would only recite them at the user.
+  if (onRoute) {
+    onRoute({
+      kind: 'route',
+      origin: { name: o.name, lat: o.lat, lon: o.lon },
+      dest: { name: d.name, lat: d.lat, lon: d.lon },
+    });
+  }
   return {
     origin: o.label,
     destination: d.label,
@@ -247,12 +294,19 @@ async function toolRoute(originQ, destQ, context) {
   };
 }
 
-async function execTool(name, args, context) {
+async function execTool(name, args, context, actions) {
   console.log(`[tool] ${name}(${JSON.stringify(args)})`);
   try {
     if (name === 'get_weather') return await toolWeather(String(args.location || ''));
     if (name === 'get_rain_overview') return await toolRainOverview(args.locations);
-    if (name === 'get_route') return await toolRoute(String(args.origin || ''), String(args.destination || ''), context);
+    if (name === 'get_route') {
+      // Reserve the slot before awaiting so parallel calls keep call order
+      // (not completion order); a failed route leaves the slot null.
+      const slot = actions ? actions.push(null) - 1 : -1;
+      return await toolRoute(String(args.origin || ''), String(args.destination || ''), context, (a) => {
+        if (slot >= 0) actions[slot] = a;
+      });
+    }
     return { error: `unknown tool "${name}"` };
   } catch (e) {
     return { error: e.message || 'tool failed' };
@@ -356,8 +410,8 @@ function httpsPostJSON(hostname, reqPath, payload, headers) {
   });
 }
 
-async function fetchJSON(url, headers) {
-  const res = await fetch(url, { headers: headers || {}, signal: AbortSignal.timeout(8000) });
+async function fetchJSON(url, headers, timeoutMs = 8000) {
+  const res = await fetch(url, { headers: headers || {}, signal: AbortSignal.timeout(timeoutMs) });
   const text = await res.text();
   let data = null;
   try {
@@ -369,7 +423,7 @@ async function fetchJSON(url, headers) {
 }
 
 /* ---------------- provider calls (return { text, usage }) ---------------- */
-async function callGemini(messages, context) {
+async function callGemini(messages, context, actions) {
   const contents = trimmed(messages).map((m) => ({
     role: m.role === 'assistant' ? 'model' : 'user',
     parts: [{ text: m.text }],
@@ -414,7 +468,7 @@ async function callGemini(messages, context) {
       calls.map(async (p) => ({
         functionResponse: {
           name: p.functionCall.name,
-          response: await execTool(p.functionCall.name, p.functionCall.args || {}, context),
+          response: await execTool(p.functionCall.name, p.functionCall.args || {}, context, actions),
         },
       }))
     );
@@ -423,7 +477,7 @@ async function callGemini(messages, context) {
   throw new Error('Gemini tool loop exceeded');
 }
 
-async function callGroq(messages, context) {
+async function callGroq(messages, context, actions) {
   const msgs = [{ role: 'system', content: SYSTEM + contextText(context) }].concat(
     trimmed(messages).map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.text }))
   );
@@ -471,7 +525,7 @@ async function callGroq(messages, context) {
       msgs.push({
         role: 'tool',
         tool_call_id: tc.id,
-        content: JSON.stringify(await execTool(tc.function.name, args, context)),
+        content: JSON.stringify(await execTool(tc.function.name, args, context, actions)),
       });
     }
   }
@@ -489,9 +543,30 @@ async function generate(messages, context) {
   let lastErr;
   for (const p of order) {
     try {
-      const out = p === 'gemini' ? await callGemini(messages, context) : await callGroq(messages, context);
+      // Per request AND per provider attempt: a failed-over provider's tool
+      // calls must not leak into the answer the next provider writes.
+      const collected = [];
+      const out =
+        p === 'gemini'
+          ? await callGemini(messages, context, collected)
+          : await callGroq(messages, context, collected);
       record(p, out.usage);
-      return { reply: out.text, provider: p, model: META[p].model, usage: snapshot() };
+      // Dedupe by endpoint coordinates keeping the LAST (the one the final
+      // answer is based on); omit the key entirely when empty.
+      const key = (a) => `${a.origin.lat},${a.origin.lon};${a.dest.lat},${a.dest.lon}`;
+      const byKey = new Map();
+      for (const a of collected.filter(Boolean)) {
+        byKey.delete(key(a));
+        byKey.set(key(a), a);
+      }
+      const actions = [...byKey.values()].slice(-1);
+      return {
+        reply: out.text,
+        provider: p,
+        model: META[p].model,
+        usage: snapshot(),
+        ...(actions.length ? { actions } : {}),
+      };
     } catch (e) {
       lastErr = e;
       if (isQuota(e)) markExhausted(p, e.message);
@@ -647,20 +722,32 @@ async function resolveHandler(url) {
   return { status: 404, body: { error: 'not_found' } };
 }
 
+// Worst-case wall time of routeHandler: every attempt times out, with a backoff
+// between attempts (none after the last). The browser's budget for /api/route
+// (ROUTE_PROXY_TIMEOUT_MS in src/services/config.js) MUST stay above this, or the
+// client abandons a proxy that is still retrying and falls back to calling public
+// OSRM directly from the browser. src/services/RouteService.test.js asserts the
+// relationship. 2 x 6s + 0.4s = 12.4s (was 3 x 8s + backoff, ~26s).
+const ROUTE_ATTEMPTS = 2;
+const ROUTE_ATTEMPT_TIMEOUT_MS = 6000;
+const ROUTE_BACKOFF_MS = 400;
+const ROUTE_PROXY_WORST_CASE_MS =
+  ROUTE_ATTEMPTS * ROUTE_ATTEMPT_TIMEOUT_MS + ROUTE_BACKOFF_MS * ((ROUTE_ATTEMPTS * (ROUTE_ATTEMPTS - 1)) / 2);
+
 async function routeHandler(from, to) {
   const f = (from || '').split(',');
   const t = (to || '').split(',');
   if (f.length !== 2 || t.length !== 2) return { status: 400, body: { error: 'bad_coords' } };
   const url = `https://router.project-osrm.org/route/v1/driving/${f[1]},${f[0]};${t[1]},${t[0]}?alternatives=true&overview=full&geometries=geojson&annotations=duration`;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < ROUTE_ATTEMPTS; attempt++) {
     try {
-      const { status, data } = await fetchJSON(url);
+      const { status, data } = await fetchJSON(url, undefined, ROUTE_ATTEMPT_TIMEOUT_MS);
       if (status === 200 && data && data.code === 'Ok') return { status: 200, body: data };
       if (data && data.code) return { status: 200, body: data };
     } catch {
       /* retry */
     }
-    await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+    if (attempt < ROUTE_ATTEMPTS - 1) await new Promise((r) => setTimeout(r, ROUTE_BACKOFF_MS * (attempt + 1)));
   }
   return { status: 502, body: { error: 'routing_unavailable' } };
 }
@@ -752,90 +839,6 @@ async function logHandler(body) {
   return { status: 204, body: {} };
 }
 
-/* ---------------- chat memory (Supabase, durable conversation) ---------------- */
-// chat_messages (supabase/migrations/0002) is the opposite of chat_log above:
-// full conversation content — role + text only, no card/route/choice payload —
-// keyed to a stable per-browser client_id so the thread survives a closed tab
-// or a new session and the LLM gets its context back. Same degrade contract as
-// logHandler: missing env vars, a not-yet-created table, or a network error
-// must never surface to the chat UI or block a reply.
-const CHAT_MEMORY_TEXT_MAX = 2000;
-const CHAT_MEMORY_LIMIT = 50;
-
-async function chatMemoryWriteHandler(body) {
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) return { status: 204, body: {} };
-  const b = body || {};
-  const clientId = typeof b.client_id === 'string' ? b.client_id.trim() : '';
-  const role = b.role === 'assistant' ? 'assistant' : b.role === 'user' ? 'user' : null;
-  const text = typeof b.text === 'string' ? b.text.slice(0, CHAT_MEMORY_TEXT_MAX) : '';
-  // Nothing worth writing — same no-op as an unconfigured backend, not an error.
-  if (!clientId || !role || !text) return { status: 204, body: {} };
-  try {
-    await fetch(`${SUPABASE_URL}/rest/v1/chat_messages`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        apikey: SUPABASE_SERVICE_KEY,
-        Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
-        Prefer: 'return=minimal',
-      },
-      body: JSON.stringify({ client_id: clientId, role, text }),
-      signal: AbortSignal.timeout(5000),
-    });
-  } catch {
-    /* fire-and-forget: a Supabase outage or a not-yet-created table must never break chat */
-  }
-  return { status: 204, body: {} };
-}
-
-// Most recent CHAT_MEMORY_LIMIT rows, oldest-first (the order a transcript
-// replays in, and the order askAI's history expects). Any failure — no env,
-// missing table, bad network — degrades to "nothing to hydrate", never an
-// error the caller has to handle differently from an empty history.
-async function chatMemoryReadHandler(clientId) {
-  const id = typeof clientId === 'string' ? clientId.trim() : '';
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY || !id) return { status: 200, body: { messages: [] } };
-  try {
-    const res = await fetch(
-      `${SUPABASE_URL}/rest/v1/chat_messages?client_id=eq.${encodeURIComponent(id)}&select=role,text&order=ts.desc&limit=${CHAT_MEMORY_LIMIT}`,
-      {
-        headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` },
-        signal: AbortSignal.timeout(5000),
-      }
-    );
-    if (!res.ok) return { status: 200, body: { messages: [] } };
-    const rows = await res.json();
-    if (!Array.isArray(rows)) return { status: 200, body: { messages: [] } };
-    // PostgREST gave us newest-first (so LIMIT keeps the recent tail, not the
-    // oldest rows) — flip it before handing back to the caller.
-    return { status: 200, body: { messages: rows.reverse().map((r) => ({ role: r.role, text: r.text })) } };
-  } catch {
-    return { status: 200, body: { messages: [] } };
-  }
-}
-
-// The server side of the Trash button — "delete my data" has to actually
-// delete the durable copy, not just the localStorage one. Scoped to one
-// client_id; never touches another browser's rows.
-async function chatMemoryDeleteHandler(clientId) {
-  const id = typeof clientId === 'string' ? clientId.trim() : '';
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY || !id) return { status: 204, body: {} };
-  try {
-    await fetch(`${SUPABASE_URL}/rest/v1/chat_messages?client_id=eq.${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-      headers: {
-        apikey: SUPABASE_SERVICE_KEY,
-        Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
-        Prefer: 'return=minimal',
-      },
-      signal: AbortSignal.timeout(5000),
-    });
-  } catch {
-    /* fire-and-forget: same degrade contract as the write/read paths */
-  }
-  return { status: 204, body: {} };
-}
-
 module.exports = {
   hasKey,
   trimmed,
@@ -847,8 +850,6 @@ module.exports = {
   geocodeHandler,
   resolveHandler,
   routeHandler,
+  ROUTE_PROXY_WORST_CASE_MS,
   logHandler,
-  chatMemoryWriteHandler,
-  chatMemoryReadHandler,
-  chatMemoryDeleteHandler,
 };

@@ -1,4 +1,4 @@
-import { answer } from './assistant';
+import { answer, routeSummary } from './assistant';
 
 // Mirrors the shape App.js builds.
 const weather = {
@@ -117,4 +117,24 @@ describe('activity questions', () => {
 
 test('without weather loaded it asks for a city rather than inventing one', () => {
   expect(answer('is it a good evening for a run?', null)).toMatch(/Search for a city/);
+});
+
+describe('routeSummary', () => {
+  const D = 'Grand Indonesia';
+  test('dry', () =>
+    expect(routeSummary(D, 'dry')).toBe('**Grand Indonesia** — stays dry the whole way, no umbrella needed.'));
+  test('light', () =>
+    expect(routeSummary(D, 'light')).toBe('**Grand Indonesia** — a little light rain on the way, maybe pack an umbrella.'));
+  test('wet', () =>
+    expect(routeSummary(D, 'wet')).toBe("**Grand Indonesia** — rain forecast while you'd be driving, take an umbrella."));
+  test('unknown', () =>
+    expect(routeSummary(D, 'unknown')).toBe("**Grand Indonesia** — I couldn't check rain along this route."));
+  test('departAt appends the leaving time only when given', () => {
+    const t = new Date(2026, 9, 11, 18, 0).getTime();
+    expect(routeSummary(D, 'dry', t)).toMatch(/ Leaving 6:00 PM\.$/);
+    expect(routeSummary(D, 'dry')).not.toMatch(/Leaving/);
+  });
+  test('stays a single line anchored on the destination', () => {
+    expect(routeSummary(D, 'wet')).not.toContain('\n');
+  });
 });

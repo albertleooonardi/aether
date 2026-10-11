@@ -6,7 +6,7 @@
 // Providers, in order: backend proxy → Photon → Nominatim → WeatherAPI search.
 // Both OSM geocoders read the same data, but Photon indexes POIs far better,
 // while Nominatim is the more reliable fallback for plain place names.
-import { WEATHER_API_KEY, WEATHER_BASE_URL } from './config';
+import { WEATHER_API_KEY, WEATHER_BASE_URL, upstreamSignal } from './config';
 
 const PHOTON = 'https://photon.komoot.io/api';
 const NOMINATIM = 'https://nominatim.openstreetmap.org/search';
@@ -148,17 +148,31 @@ export const geocodeCandidates = async (query, near, limit = MAX_CANDIDATES) => 
   const at = biased(near) ? `&near=${near.lat},${near.lon}` : '';
   const atLatLon = biased(near) ? `&lat=${near.lat}&lon=${near.lon}` : '';
 
+  // Two bounds, because each alone failed. A fresh 8s signal per source let four
+  // stalled sources pin the turn for 4 x 8s (and a route turn geocodes twice). ONE
+  // shared 8s signal fixed that but let the first source starve the rest: the
+  // /api/geocode proxy is slow-but-healthy (it runs Photon 8s + Nominatim 8s
+  // server-side, ~16s worst case), so it alone spent the whole budget and direct
+  // Photon was never tried. So: each source gets at most SOURCE_MS (5s - enough for
+  // a healthy proxy or Photon, short enough to move on from a stall), and the whole
+  // attempt is capped at TOTAL_MS (12s - a stalled first source still leaves room
+  // for two more full sources, and busy is pinned for ~12s, not ~32s).
+  const SOURCE_MS = 5000;
+  const TOTAL_MS = 12000;
+  const MIN_SOURCE_MS = 1000; // under this there is no point starting another request
+  const deadline = Date.now() + TOTAL_MS;
+  let signal;
   const sources = [
     // 1) Backend proxy (reliable, sends a proper User-Agent to the geocoders).
     async () => {
-      const res = await fetch(`/api/geocode?q=${encodeURIComponent(query)}&limit=${PROVIDER_LIMIT}${at}`);
+      const res = await fetch(`/api/geocode?q=${encodeURIComponent(query)}&limit=${PROVIDER_LIMIT}${at}`, { signal });
       if (!res.ok) return [];
       const body = await res.json();
       return (body.candidates || []).filter((c) => typeof c.lat === 'number');
     },
     // 2) Direct Photon — strongest on POIs.
     async () => {
-      const res = await fetch(`${PHOTON}?q=${encodeURIComponent(query)}&limit=${PROVIDER_LIMIT}&lang=en${atLatLon}`);
+      const res = await fetch(`${PHOTON}?q=${encodeURIComponent(query)}&limit=${PROVIDER_LIMIT}&lang=en${atLatLon}`, { signal });
       if (!res.ok) return [];
       return ((await res.json()).features || []).map(fromPhoton).filter(Boolean);
     },
@@ -166,13 +180,13 @@ export const geocodeCandidates = async (query, near, limit = MAX_CANDIDATES) => 
     //    outranks the city of the same name.
     async () => {
       const url = `${NOMINATIM}?q=${encodeURIComponent(query)}&format=json&limit=${PROVIDER_LIMIT}&addressdetails=0${viewboxOf(near)}`;
-      const res = await fetch(url, { headers: { Accept: 'application/json' } });
+      const res = await fetch(url, { headers: { Accept: 'application/json' }, signal });
       if (!res.ok) return [];
       return [...(await res.json())].sort((a, b) => (b.importance || 0) - (a.importance || 0)).map(fromNominatim);
     },
     // 4) WeatherAPI city search — plain place names only.
     async () => {
-      const res = await fetch(`${WEATHER_BASE_URL}/search.json?key=${WEATHER_API_KEY}&q=${encodeURIComponent(query)}`);
+      const res = await fetch(`${WEATHER_BASE_URL}/search.json?key=${WEATHER_API_KEY}&q=${encodeURIComponent(query)}`, { signal });
       if (!res.ok) return [];
       return (await res.json()).map((l) => ({
         name: l.name,
@@ -185,10 +199,15 @@ export const geocodeCandidates = async (query, near, limit = MAX_CANDIDATES) => 
 
   const found = [];
   for (const load of sources) {
+    // Overall deadline gone -> stop. A single source timing out is NOT this case:
+    // it just ends that source's own signal and the loop moves on to the next.
+    const remaining = deadline - Date.now();
+    if (remaining < MIN_SOURCE_MS) break;
+    signal = upstreamSignal(Math.min(SOURCE_MS, remaining));
     try {
       found.push(...(await load()));
     } catch {
-      /* try the next source */
+      /* this source failed or timed out - try the next one */
     }
     // Dedupe as we go: 15 raw hits can collapse to 3 real places, and only the
     // deduped count tells us whether it's worth asking anyone else.
@@ -242,6 +261,11 @@ const SUGGEST_DEBOUNCE_MS = 300;
 // "pontianak". Every call aborts whatever request is still in flight *and*
 // stamps a sequence number, so even a response that slips past the abort
 // (e.g. a fetch that ignores its signal) is still discarded once it's stale.
+// Any http(s) link, not just Google Maps ones — none of them belong in a
+// place-name geocoder. Same shape as intents.js's parseMapsUrl, kept local so
+// the service layer doesn't import from the chat layer.
+export const looksLikeUrl = (text) => /https?:\/\/\S+/i.test(text || '');
+
 export const createSuggestTypeahead = ({ minLength = MIN_SUGGEST_LEN, debounceMs = SUGGEST_DEBOUNCE_MS } = {}) => {
   let timer = null;
   let controller = null;
@@ -256,7 +280,10 @@ export const createSuggestTypeahead = ({ minLength = MIN_SUGGEST_LEN, debounceMs
   const run = (query, near, onResult) => {
     cancel();
     const text = (query || '').trim();
-    if (text.length < minLength) {
+    // A pasted link is resolved at submit time (resolveInput), never geocoded
+    // as-you-type: sending it to Photon leaks the URL to a third party and
+    // pops junk suggestions over the form. Clear any open list instead.
+    if (looksLikeUrl(text) || text.length < minLength) {
       onResult([]);
       return;
     }

@@ -279,3 +279,37 @@ test('score does not punish a route for being long', async () => {
   expect(short.segments.length).toBeLessThan(long.segments.length);
   expect(long.score).toBeCloseTo(short.score, 5);
 });
+
+// AbortSignal.timeout rejects fetch with a DOMException; that must not reach the
+// user as "The operation was aborted due to timeout".
+test('an aborted direct-OSRM fetch reports unavailable, not a raw DOMException', async () => {
+  const abort = () => Promise.reject(new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
+  global.fetch = jest.fn().mockImplementationOnce(proxyDown).mockImplementationOnce(abort);
+
+  await expect(getRoutes(JKT, BDG)).rejects.toMatchObject({
+    code: 'unavailable',
+    message: 'Routing service unavailable',
+  });
+});
+
+// The browser must outwait the proxy: if it aborts while routeHandler is still
+// retrying, it falls back to public OSRM straight from the user's IP.
+test('client proxy budget exceeds the proxy worst-case retry budget', () => {
+  const { ROUTE_PROXY_WORST_CASE_MS } = require('../../api/_lib/core');
+  const { ROUTE_PROXY_TIMEOUT_MS } = require('./config');
+  expect(ROUTE_PROXY_TIMEOUT_MS).toBeGreaterThan(ROUTE_PROXY_WORST_CASE_MS);
+});
+
+test('the /api/route call is given the proxy budget, not the 8s default', async () => {
+  const original = AbortSignal.timeout;
+  const timeout = jest.fn(() => new AbortController().signal);
+  AbortSignal.timeout = timeout;
+  try {
+    global.fetch = jest.fn().mockResolvedValueOnce(osrmRes(200, { code: 'NoRoute' }));
+    await expect(getRoutes(JKT, BDG)).rejects.toMatchObject({ code: 'no_route' });
+    const { ROUTE_PROXY_TIMEOUT_MS } = require('./config');
+    expect(timeout).toHaveBeenCalledWith(ROUTE_PROXY_TIMEOUT_MS);
+  } finally {
+    AbortSignal.timeout = original;
+  }
+});

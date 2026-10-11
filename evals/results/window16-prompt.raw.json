@@ -1,0 +1,15 @@
+{
+  "historyTurns": 16,
+  "cases": {
+    "carryover-city": {
+      "replies": [
+        "**Bandung is currently 31 °C, feeling like 28 °C, with cloudy skies.** Humidity is low at 22 %, wind from the east‑northeast at about 11 km/h, and the UV index is high at 11.3. There’s only a 5 % chance of rain right now, so it’s a dry, warm afternoon.",
+        "Tomorrow (2026‑09‑07) in **Bandung** looks dry – the forecast calls for “Smoky haze” with a **7 % chance of rain** and a high of 32 °C. You can expect mostly clear, warm conditions throughout the day."
+      ],
+      "providers": [
+        "groq/openai/gpt-oss-120b",
+        "groq/openai/gpt-oss-120b"
+      ]
+    }
+  }
+}

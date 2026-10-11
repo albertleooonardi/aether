@@ -115,7 +115,7 @@ const ChatRouteMap = ({ data, onOpenInMap }) => {
     segmentsOf(sel).forEach((s) => {
       const lvl = LEVEL[s.level] || LEVEL.unknown;
       const line = L.polyline(sel.coordinates.slice(s.from, s.to + 1), {
-        color: lvl.stroke,
+        color: lvl.stroke.dark, // this map always draws on the dark basemap
         // "No data" also breaks the line, so absence is never colour-alone.
         ...(lvl.dashed ? { dashArray: '7 9' } : {}),
         weight: 6,
@@ -152,23 +152,30 @@ const ChatRouteMap = ({ data, onOpenInMap }) => {
     <div className="mt-2 overflow-hidden rounded-2xl border border-ink/10 bg-ink/5">
       {/* Endpoints */}
       <div className="flex items-center gap-2 px-3 py-2 text-xs text-ink/70">
-        <MapPin size={13} className="text-sky-300" />
-        <span className="truncate">{data.origin.name}</span>
-        <span className="text-ink/30">→</span>
-        <Flag size={13} className="text-orange-300" />
-        <span className="truncate">{data.dest.name}</span>
+        <MapPin size={13} className="shrink-0 text-sky-300" />
+        {/* min-w-0 is what lets `truncate` work inside a flex row; the destination gets the
+            larger share because it is the name the user cares about. */}
+        <span className="min-w-0 flex-1 truncate" title={data.origin.name}>{data.origin.name}</span>
+        <span className="shrink-0 text-ink/30">→</span>
+        <Flag size={13} className="shrink-0 text-orange-300" />
+        <span className="min-w-0 flex-[1.6] truncate" title={data.dest.name}>{data.dest.name}</span>
+      </div>
+
+      {/* The button floats over the map (not in the endpoints row, where it starved the names).
+          Top-right: zoomControl is off, so no Leaflet control lives there. z-[1000] clears Leaflet's
+          panes (up to 700) and controls (800); the min-h/px keep a usable touch target. */}
+      <div className="relative">
+        <div ref={el} className="h-56 w-full" />
         {onOpenInMap && (
           <button
             onClick={() => onOpenInMap(data)}
             title="Open on the full map page"
-            className="ml-auto flex shrink-0 items-center gap-1 rounded-lg bg-ink/10 px-2 py-1 text-[10px] font-medium text-ink/70 transition hover:bg-ink/20 hover:text-ink"
+            className="absolute right-2 top-2 z-[1000] flex min-h-[32px] items-center gap-1 rounded-lg bg-ink/10 px-2.5 py-1 text-[10px] font-medium text-ink/70 backdrop-blur transition hover:bg-ink/20 hover:text-ink"
           >
             <Maximize2 size={11} /> Open in map
           </button>
         )}
       </div>
-
-      <div ref={el} className="h-56 w-full" />
 
       {/* Route summary — tap a row to draw that alternative instead. */}
       <div className="space-y-1.5 p-3">
@@ -186,10 +193,15 @@ const ChatRouteMap = ({ data, onOpenInMap }) => {
                 isSelected ? 'bg-ink/10 text-ink' : 'text-ink/55 hover:bg-ink/5 hover:text-ink/80'
               }`}
             >
-              <span
-                className="h-2.5 w-2.5 shrink-0 rounded-full"
-                style={{ background: isSelected ? lv.ink : ALT_ROUTE_COLOR }}
-              />
+              {/* Rule: anything that samples the drawn map line (this dot, the legend swatches) uses
+                  `stroke` on a dark chip; anything that is panel TEXT (the badge below) uses `ink`.
+                  `ink` here made a `light` route the same hex the legend labels "Dry". */}
+              <span className="inline-flex shrink-0 items-center rounded-full bg-slate-900/90 p-0.5 ring-1 ring-ink/15">
+                <span
+                  className="h-2 w-2 rounded-full"
+                  style={{ background: isSelected ? lv.stroke.dark : ALT_ROUTE_COLOR }}
+                />
+              </span>
               <RouteIcon size={12} className="shrink-0" />
               <span className="flex-1 truncate">
                 {isBest ? 'Recommended' : `Option ${i + 1}`} · {r.distanceKm.toFixed(1)} km
@@ -212,7 +224,13 @@ const ChatRouteMap = ({ data, onOpenInMap }) => {
             <span>Along the road:</span>
             {legend.map((l) => (
               <span key={l} className="flex items-center gap-1">
-                <span className="h-1.5 w-3 rounded-full" style={{ background: (LEVEL[l] || LEVEL.unknown).ink }} />
+                {/* Legend = a sample of the MAP line, so it uses `stroke` on a dark chip (the chip
+                    supplies the contrast the light panel can't). The per-route badge is panel text, so it
+                    uses `ink`. The two ramps run in opposite directions BY DESIGN: a dark basemap and a
+                    light panel want opposite things. Don't "fix" either toward the other (RouteLevels.js). */}
+                <span className="inline-flex items-center rounded-full bg-slate-900/90 px-1 py-0.5 ring-1 ring-ink/15">
+                  <span className="h-1.5 w-3 rounded-full" style={{ background: (LEVEL[l] || LEVEL.unknown).stroke.dark }} />
+                </span>
                 {(LEVEL[l] || LEVEL.unknown).label}
               </span>
             ))}
@@ -221,16 +239,16 @@ const ChatRouteMap = ({ data, onOpenInMap }) => {
 
         <p className="pt-1 text-[11px] text-ink/45">
           {shown.rain.level === 'unknown'
-            ? 'Could not reach the weather service to check this route.'
+            ? "Couldn't reach the weather service to check this route."
             : shown.rain.level === 'dry'
-            ? `No rain forecast at any of the ${shown.rain.samples} points along this route, at the times you'd pass them` +
-              (typeof shown.rain.chance === 'number' ? ` (${shown.rain.chance}% average chance).` : '.')
-            : `Rain forecast at ${shown.rain.rainy}/${shown.rain.samples} points along this route, at the times you'd pass them.`}
+            ? `No rain forecast at any of ${shown.rain.samples} points along the route` +
+              (typeof shown.rain.chance === 'number' ? ` (avg ${shown.rain.chance}%).` : '.')
+            : `Rain forecast at ${shown.rain.rainy}/${shown.rain.samples} points along the route.`}
           {shown.arriveAt && (
             <>
               {' '}
-              Arriving ~{new Date(shown.arriveAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
-              <span className="text-ink/30"> · times exclude live traffic</span>
+              Arrive ~{new Date(shown.arriveAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
+              <span className="text-ink/30"> · excl. live traffic</span>
             </>
           )}
         </p>

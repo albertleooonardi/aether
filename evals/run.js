@@ -65,8 +65,25 @@ async function askWithRetry(messages) {
   throw new Error(lastErr);
 }
 
-async function generate(list) {
-  const existing = fs.existsSync(rawPath(label)) ? JSON.parse(fs.readFileSync(rawPath(label))) : { cases: {} };
+// A raw file's transcripts were generated under ONE history window, and that is
+// what the baseline-vs-window comparison depends on. Reusing a file made under a
+// different window would grade stale transcripts and label them with the wrong
+// window, so refuse loudly instead — never reuse, never overwrite.
+function loadRaw(effectiveHistory) {
+  if (!fs.existsSync(rawPath(label))) return null;
+  const existing = JSON.parse(fs.readFileSync(rawPath(label)));
+  if (existing.historyTurns !== effectiveHistory) {
+    console.error(
+      `${path.relative(process.cwd(), rawPath(label))} was generated with historyTurns=${existing.historyTurns}, ` +
+        `but this run uses ${effectiveHistory}. Pick a different --label, or delete that file.`
+    );
+    process.exit(1);
+  }
+  return existing;
+}
+
+async function generate(list, effectiveHistory) {
+  const existing = loadRaw(effectiveHistory) || { cases: {} };
   const store = existing.cases || {};
 
   for (const c of list) {
@@ -95,7 +112,9 @@ async function generate(list) {
       console.log(` ERROR ${e.message.slice(0, 90)}`);
     }
     // Write after every case: a later failure must not cost the earlier work.
-    fs.writeFileSync(rawPath(label), JSON.stringify({ historyTurns: Number(process.env.AI_HISTORY_TURNS || 6), cases: store }, null, 2));
+    // The stamp is the window this run generates under; loadRaw has already
+    // guaranteed any pre-existing file carries the same value.
+    fs.writeFileSync(rawPath(label), JSON.stringify({ historyTurns: effectiveHistory, cases: store }, null, 2));
   }
   return store;
 }
@@ -183,10 +202,10 @@ async function gradeAll(list, store, effectiveHistory) {
       console.error(`no saved transcripts at ${rawPath(label)} — run the generate phase first`);
       process.exit(1);
     }
-    store = JSON.parse(fs.readFileSync(rawPath(label))).cases;
+    store = loadRaw(effectiveHistory).cases;
   } else {
     console.log('  — generating —');
-    store = await generate(list);
+    store = await generate(list, effectiveHistory);
     if (phase === 'generate') return;
     console.log('\n  — grading —');
   }

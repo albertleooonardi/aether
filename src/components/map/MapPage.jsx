@@ -14,7 +14,7 @@ import {
   Umbrella,
   Crosshair,
 } from 'lucide-react';
-import { LEVEL, ALT_ROUTE_COLOR, segmentsOf } from '../../utils/RouteLevels';
+import { LEVEL, ALT_ROUTE_COLOR, segmentsOf, strokeOf } from '../../utils/RouteLevels';
 import { enableSmoothWheelZoom } from '../../utils/SmoothZoom';
 import { getWeatherIcon } from '../../utils/WeatherIcons';
 import { fetchWeatherByCoords } from '../../services/WeatherService';
@@ -107,6 +107,11 @@ const BASEMAP = {
 const BASEMAP_MAX_NATIVE_ZOOM = 16;
 const BASEMAP_ATTRIBUTION = 'Esri · HERE · Garmin · © OpenStreetMap contributors';
 
+// Background of the legend chips: a miniature of the basemap the swatch samples, so
+// `strokeOf(level, theme)` always sits on the ground it was tuned against. Dark =
+// near-black like Esri Dark Gray; light = Esri Light Gray land (measured #efefef).
+const CHIP_BG = { dark: 'rgba(15,23,42,0.9)', light: '#efefef' };
+
 const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRouteShown }) => {
   const el = useRef(null);
   const mapRef = useRef(null);
@@ -125,6 +130,9 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
   // The place picked from a suggestion, kept next to the exact text it wrote
   // into the field (see pickIsCurrent) so submit can use the chosen pin
   // instead of re-geocoding the string — and so an edit after picking drops it.
+  // Which input the user last typed in. A typeahead result may only touch `cands` if
+  // its own field is still the one being edited — see applySuggestions.
+  const activeField = useRef(null); // 'explore' | 'origin' | 'dest' | null
   const originPick = useRef(null); // { text, place } | null
   const destPick = useRef(null);
 
@@ -293,12 +301,26 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
     openDetail(place);
   };
 
+  // The origin and dest typeaheads are separate instances (a shared debounce/abort
+  // would let typing in one cancel the other) but they share ONE `cands` list. So a
+  // result is applied only if its field is still the one being edited — otherwise a
+  // slow From result would replace the To suggestions and a click would fill the
+  // wrong field. An empty result clears any open *suggestion* list (so a short To edit
+  // can't leave From suggestions open under it, where a click would rewrite the field
+  // not being edited), but never the post-submit 'dest' picker (a short From edit must
+  // not close that one).
+  const applySuggestions = (field, kind) => (list) => {
+    if (activeField.current !== field) return;
+    setCands((prev) => (list.length ? { kind, list } : prev && prev.kind === 'dest' ? prev : null));
+  };
+
   // Explore box as-you-type: Photon only, debounced, and always superseded by
   // whatever the user typed most recently — see createSuggestTypeahead.
   const handleQueryChange = (e) => {
     const value = e.target.value;
     setQ(value);
-    typeahead.run(value, mapCenter(), (list) => setCands(list.length ? { kind: 'explore', list } : null));
+    activeField.current = 'explore';
+    typeahead.run(value, mapCenter(), applySuggestions('explore', 'explore'));
   };
 
   // Directions inputs get the same as-you-type treatment, each on its own
@@ -309,14 +331,16 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
     const value = e.target.value;
     setOriginText(value);
     if (!pickIsCurrent(originPick.current, value)) originPick.current = null;
-    originTypeahead.run(value, mapCenter(), (list) => setCands(list.length ? { kind: 'origin', list } : null));
+    activeField.current = 'origin';
+    originTypeahead.run(value, mapCenter(), applySuggestions('origin', 'origin'));
   };
 
   const handleDestChange = (e) => {
     const value = e.target.value;
     setDestText(value);
     if (!pickIsCurrent(destPick.current, value)) destPick.current = null;
-    destTypeahead.run(value, mapCenter(), (list) => setCands(list.length ? { kind: 'dest-suggest', list } : null));
+    activeField.current = 'dest';
+    destTypeahead.run(value, mapCenter(), applySuggestions('dest', 'dest-suggest'));
   };
 
   // Picking a suggestion fills the field and remembers the exact place chosen —
@@ -454,6 +478,11 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
   useEffect(() => {
     if (!initialRoute) return;
     setMode('directions');
+    // These setStates bypass handleOriginChange/handleDestChange, so drop the picks
+    // here: a leftover pick whose text happens to equal the pushed name would be
+    // trusted on submit and route to the stale pin.
+    originPick.current = null;
+    destPick.current = null;
     setOriginText(initialRoute.origin?.name || '');
     setDestText(initialRoute.dest?.name || '');
     setRoute(initialRoute);
@@ -482,7 +511,7 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
     const sel = route.routes[selRoute];
     segmentsOf(sel).forEach((s) => {
       const line = L.polyline(sel.coordinates.slice(s.from, s.to + 1), {
-        color: (LEVEL[s.level] || LEVEL.unknown).stroke,
+        color: strokeOf(LEVEL[s.level] || LEVEL.unknown, theme),
         ...((LEVEL[s.level] || LEVEL.unknown).dashed ? { dashArray: '7 9' } : {}),
         weight: 6,
         opacity: 0.95,
@@ -510,7 +539,7 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
       lastFitted.current = route;
       map.fitBounds(L.latLngBounds(route.routes[route.bestIndex].coordinates), { padding: [60, 60] });
     }
-  }, [ready, route, selRoute]);
+  }, [ready, route, selRoute, theme]); // theme: stroke ramp is per-basemap, so a flip must redraw
 
   const locate = () => {
     if (!navigator.geolocation) return;
@@ -674,7 +703,12 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
                       isSel ? 'bg-ink/10 text-ink' : 'text-ink/55 hover:bg-ink/5 hover:text-ink/80'
                     }`}
                   >
-                    <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: isSel ? lv.ink : ALT_ROUTE_COLOR }} />
+                    {/* Rule: anything that samples the drawn map line (this dot, the legend swatches) uses
+                        `strokeOf(level, theme)` on a miniature of the basemap (CHIP_BG[theme]); anything
+                        that is panel TEXT (the badge) uses `ink`. */}
+                    <span className="inline-flex shrink-0 items-center rounded-full p-0.5 ring-1 ring-ink/15" style={{ background: CHIP_BG[theme] || CHIP_BG.dark }}>
+                      <span className="h-2 w-2 rounded-full" style={{ background: isSel ? strokeOf(lv, theme) : ALT_ROUTE_COLOR }} />
+                    </span>
                     <RouteIcon size={12} className="shrink-0" />
                     <span className="flex-1 truncate">
                       {i === route.bestIndex ? 'Recommended' : `Option ${i + 1}`} · {r.distanceKm.toFixed(1)} km
@@ -695,7 +729,13 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
                   <span>Along the road:</span>
                   {legend.map((l) => (
                     <span key={l} className="flex items-center gap-1">
-                      <span className="h-1.5 w-3 rounded-full" style={{ background: (LEVEL[l] || LEVEL.unknown).ink }} />
+                      {/* Legend = a sample of the MAP line, so it uses `stroke` on a dark chip (the chip
+                          supplies the contrast the light panel can't). The per-route badge is panel text, so it
+                          uses `ink`. The two ramps run in opposite directions BY DESIGN: a dark basemap and a
+                          light panel want opposite things. Don't "fix" either toward the other (RouteLevels.js). */}
+                      <span className="inline-flex items-center rounded-full px-1 py-0.5 ring-1 ring-ink/15" style={{ background: CHIP_BG[theme] || CHIP_BG.dark }}>
+                        <span className="h-1.5 w-3 rounded-full" style={{ background: strokeOf(LEVEL[l] || LEVEL.unknown, theme) }} />
+                      </span>
                       {(LEVEL[l] || LEVEL.unknown).label}
                     </span>
                   ))}
@@ -811,6 +851,7 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
                         ? { name: weather.city, lat: weather.lat, lon: weather.lon }
                         : null;
                     setMode('directions');
+                    destPick.current = null; // text rewritten without handleDestChange
                     setDestText(dest.name || '');
                     if (origin) runRoute(origin, dest);
                     else setError('Type a starting point to route here.');
@@ -830,10 +871,16 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
       {route && (
         <div className="absolute bottom-3 left-3 z-10 hidden items-center gap-2 rounded-full border border-ink/10 bg-panel/85 px-3 py-1.5 text-[10px] text-ink/55 backdrop-blur-xl sm:flex">
           <span className="flex items-center gap-1.5">
-            <span
-              className="inline-block h-1.5 w-6 rounded-full"
-              style={{ background: `linear-gradient(90deg,${LEVEL.dry.ink},${LEVEL.light.ink},${LEVEL.wet.ink})` }}
-            />
+            {/* Legend = a sample of the MAP line, so it uses `strokeOf(level, theme)` on a chip
+                coloured like the basemap (the chip supplies the contrast the panel can't). The per-route badge is panel text, so it
+                uses `ink`. The two ramps run in opposite directions BY DESIGN: a dark basemap and a
+                light panel want opposite things. Don't "fix" either toward the other (RouteLevels.js). */}
+            <span className="inline-flex items-center rounded-full px-1 py-0.5 ring-1 ring-ink/15" style={{ background: CHIP_BG[theme] || CHIP_BG.dark }}>
+              <span
+                className="inline-block h-1.5 w-6 rounded-full"
+                style={{ background: `linear-gradient(90deg,${strokeOf(LEVEL.dry, theme)},${strokeOf(LEVEL.light, theme)},${strokeOf(LEVEL.wet, theme)})` }}
+              />
+            </span>
             Route rain: dry → wet
           </span>
         </div>

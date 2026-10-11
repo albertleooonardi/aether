@@ -54,6 +54,50 @@ describe('geocodeCandidates', () => {
     expect(out[0].name).toBe('Grand Indonesia Shopping Town');
   });
 
+  // Each source gets its own signal (so one stall can't consume the others'
+  // budget), and every fetch is bounded: 5s per source under a 12s overall cap.
+  test('gives each source its own bounded signal', async () => {
+    const original = AbortSignal.timeout;
+    const timeout = jest.fn(() => new AbortController().signal);
+    AbortSignal.timeout = timeout;
+    try {
+      global.fetch = jest.fn().mockRejectedValue(new Error('down'));
+      await geocodeCandidates('nowhere', null);
+      expect(global.fetch).toHaveBeenCalledTimes(4);
+      expect(timeout).toHaveBeenCalledTimes(4);
+      timeout.mock.calls.forEach(([ms]) => expect(ms).toBeLessThanOrEqual(5000));
+      const signals = global.fetch.mock.calls.map(([, init]) => init.signal);
+      expect(new Set(signals).size).toBe(4);
+    } finally {
+      AbortSignal.timeout = original;
+    }
+  });
+
+  // The /api/geocode proxy is slow-but-healthy (~16s worst case server-side), so it
+  // can exhaust its own budget; that must not stop direct Photon from answering.
+  test('a first source that times out still lets a later source answer', async () => {
+    const original = AbortSignal.timeout;
+    // First signal is already spent (the proxy stalled); later ones are fresh.
+    const spent = new AbortController();
+    spent.abort();
+    const timeout = jest.fn().mockReturnValueOnce(spent.signal).mockImplementation(() => new AbortController().signal);
+    AbortSignal.timeout = timeout;
+    try {
+      global.fetch = jest
+        .fn()
+        .mockRejectedValueOnce(new DOMException('The operation timed out', 'TimeoutError'))
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ features: [{ properties: { name: 'Plaza Senayan' }, geometry: { coordinates: [106.8, -6.2] } }] }),
+        });
+      const out = await geocodeCandidates('Plaza Senayan', null);
+      expect(global.fetch.mock.calls[1][0]).toMatch(/^https:\/\/photon\.komoot\.io\/api\?/);
+      expect(out[0].name).toBe('Plaza Senayan');
+    } finally {
+      AbortSignal.timeout = original;
+    }
+  });
+
   test('falls back to Photon when the proxy is down', async () => {
     global.fetch = jest
       .fn()
@@ -265,6 +309,22 @@ describe('createSuggestTypeahead', () => {
 
     expect(global.fetch).not.toHaveBeenCalled();
     expect(cb).toHaveBeenCalledWith([]); // cleared immediately, not after the debounce
+  });
+
+  test.each([
+    ['a Google Maps link', 'https://www.google.com/maps/place/Grand+Indonesia/@-6.1958,106.8215,17z'],
+    ['a short link', 'https://maps.app.goo.gl/abc123'],
+    ['a non-Google link', 'http://example.com/some/long/path'],
+  ])('skips the geocoder for %s and clears any open list', (_, url) => {
+    jest.useFakeTimers();
+    global.fetch = jest.fn();
+    const cb = jest.fn();
+
+    createSuggestTypeahead().run(url, null, cb);
+    jest.advanceTimersByTime(1000);
+
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(cb).toHaveBeenCalledWith([]);
   });
 
   test('debounce collapses rapid keystrokes into a single request', async () => {

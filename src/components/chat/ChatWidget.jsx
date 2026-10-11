@@ -1,11 +1,11 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { MessageCircle, X, Send, Bell, Sparkles, RotateCw, Trash2 } from 'lucide-react';
-import { parseReminder, answer, formatClock } from '../../chat/assistant';
+import { parseReminder, answer, formatClock, routeSummary } from '../../chat/assistant';
 import { parseNavigation, parseWeatherIn, parseMapsUrl, parseFollowUp } from '../../chat/intents';
 import { fetchWeatherByCity } from '../../services/WeatherService';
 import { geocode, geocodeCandidates, resolveMapsUrl } from '../../services/GeoService';
 import { getRoutesWithRain } from '../../services/RouteService';
-import { askAI, checkStatus, logTurn, saveMessage, fetchMemory, deleteMemory } from '../../services/AetherAI';
+import { askAI, checkStatus, logTurn } from '../../services/AetherAI';
 import RichText from './RichText';
 import WeatherReplyCard from './WeatherReplyCard';
 import ChatRouteMap from './ChatRouteMap';
@@ -45,7 +45,35 @@ const MAX_STORED_MESSAGES = 50;
 // or picker). None of that survives a refresh meaningfully — weather/route
 // data goes stale, and a picker's onPick handler lives in `pending.current`,
 // which is gone — so only the plain text/role is ever persisted or restored.
-export const stripExtras = (msgs) => msgs.map(({ id, role, text }) => ({ id, role, text }));
+// A card-only message (the map drawn after an LLM-written route answer has no
+// prose of its own) would come back as an empty bubble once its card is gone, so
+// it is dropped rather than persisted.
+export const stripExtras = (msgs) => msgs.filter((m) => m.text).map(({ id, role, text }) => ({ id, role, text }));
+
+// What the user can see right now, shaped for the model: the route card's rows
+// (same labels the card renders, so "Option 2" means a row they can tap) and any
+// reminder still pending. Deliberately tiny — it ships on every request — so no
+// coordinates, polylines or per-segment rain. Returns null when nothing is shown,
+// so a plain weather turn's payload is unchanged.
+export const displayedContext = (card, reminders, now = Date.now()) => {
+  const out = {};
+  if (card && Array.isArray(card.routes) && card.routes.length) {
+    out.route = {
+      origin: card.origin?.name,
+      destination: card.dest?.name,
+      shown_at: formatClock(card.shownAt ?? now),
+      options: card.routes.map((r, i) => ({
+        label: i === card.bestIndex ? 'Recommended' : `Option ${i + 1}`,
+        distance_km: Math.round(r.distanceKm * 10) / 10,
+        duration_min: Math.round(r.durationMin),
+        rain: r.rain?.level || 'dry',
+      })),
+    };
+  }
+  const active = (reminders || []).filter((r) => r.dueEpoch > now);
+  if (active.length) out.reminders = active.map((r) => ({ label: r.label, due: formatClock(r.dueEpoch) }));
+  return Object.keys(out).length ? out : null;
+};
 
 export const loadChat = () => {
   try {
@@ -63,25 +91,6 @@ export const saveChat = (msgs) => {
   } catch {
     /* ignore */
   }
-};
-
-// localStorage is the fast path; the Supabase-backed server transcript
-// (fetchMemory) is the durable layer behind it, reconciled in on mount
-// rather than trusted blindly — a fresh tab/browser whose localStorage never
-// had this conversation must not stomp on a longer transcript already on
-// screen. `current` is whatever's rendered right now (either the intro
-// placeholder or a restored/live transcript); `serverMsgs` is oldest-first
-// { role, text }. Picks whichever side is longer; never mutates or deletes
-// anything server-side, so a short-lived local session can't cause
-// server-side data loss even across the two-tab race the write effect
-// already has (see saveChat's write effect comment).
-export const reconcileChat = (current, serverMsgs) => {
-  if (!Array.isArray(serverMsgs) || !serverMsgs.length) return current;
-  // The untouched intro placeholder isn't real history to protect — treat
-  // it as empty so real server content still hydrates in over it.
-  const localCount = current.length === 1 && current[0].id === 'intro' ? 0 : current.length;
-  if (serverMsgs.length <= localCount) return current;
-  return serverMsgs.map((m, i) => ({ id: `server-${i}-${Date.now()}`, role: m.role, text: m.text }));
 };
 
 export const clearChat = () => {
@@ -149,6 +158,12 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
   const [reminders, setReminders] = useState(loadReminders);
   // 'checking' | 'online' | 'basic' | 'offline'
   const [status, setStatus] = useState('checking');
+  // Bumped by clearConversation. Each turn captures it (myEpoch) when it starts and
+  // threads that value through its whole call chain; say() drops output from a turn
+  // whose captured epoch no longer matches. There is deliberately NO shared
+  // "current turn" ref: clearing releases busy while the old turn is in flight, so
+  // turns overlap, and a shared ref lets a newer turn re-admit the older one's reply.
+  const epoch = useRef(0);
   const timers = useRef({});
   const logEnd = useRef(null);
   const weatherRef = useRef(weather);
@@ -165,6 +180,9 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
   // The last answered question, so follow-ups like "what about Central Park?"
   // or "how about at 8pm?" re-ask it with only that part changed.
   const lastIntent = useRef(null);
+  // The route card currently on screen (card payload + draw time), sent to the AI
+  // as `displayed` so it doesn't re-describe what the user can already see.
+  const lastCard = useRef(null);
 
   // Poll backend liveness: once on mount, then every 30s while the sheet is open
   // (and immediately each time it opens), so a backend that comes up or goes down
@@ -186,8 +204,10 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
   // forecast, so "later"/"tonight"/"tomorrow" are answered from real numbers.
   const aiContext = () => {
     const w = weatherRef.current;
-    if (!w) return { location: null };
+    const displayed = displayedContext(lastCard.current, reminders);
+    if (!w) return displayed ? { location: null, displayed } : { location: null };
     return {
+      ...(displayed && { displayed }),
       location: {
         city: w.city,
         region: w.region,
@@ -232,15 +252,24 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
     };
   };
 
-  // The one choke point every user/assistant turn passes through — hooking
-  // the durable-memory write here (role + text only, same as stripExtras)
-  // covers reminders, rich cards, and AI replies without touching every
-  // call site individually.
-  const say = (role, text, extra = {}) => {
+  const append = (role, text, extra = {}) => {
     setMessages((m) => [...m, { id: `${Date.now()}-${Math.random()}`, role, text, ...extra }]);
-    saveMessage(role, text);
   };
-  const sayAssistant = (text, extra) => say('assistant', text, extra);
+  // The one definition of "this turn no longer belongs to the current
+  // conversation": a turn began before the chat was cleared. Such a turn must not
+  // append, persist, or write lastIntent/pending, or the "cleared" exchange
+  // resurrects on refresh and follow-ups answer against deleted context.
+  // Always tested against the epoch the turn itself captured, never shared state.
+  const isStaleTurn = (turnEpoch) => turnEpoch !== epoch.current;
+  // Output that originates from a turn. Reminders are NOT part of a turn and go
+  // through append() directly: a timer can fire inside a stale turn's window, and
+  // dropping it here would still consume it (state + localStorage) unseen.
+  // A call with no turnEpoch (the user's own message, which is not turn output) is
+  // never stale.
+  const say = (role, text, extra = {}, turnEpoch) => {
+    if (turnEpoch !== undefined && isStaleTurn(turnEpoch)) return;
+    append(role, text, extra);
+  };
 
   useEffect(() => {
     if (open) logEnd.current?.scrollIntoView({ behavior: 'smooth' });
@@ -253,40 +282,25 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
     saveChat(messages);
   }, [messages]);
 
-  // localStorage is the fast path (painted synchronously from the initial
-  // state above); Supabase is the durable layer behind it, fetched once on
-  // mount and reconciled via reconcileChat rather than blindly trusted — see
-  // that function for why a shorter side never overwrites a longer one.
-  useEffect(() => {
-    let cancelled = false;
-    fetchMemory().then((serverMsgs) => {
-      if (cancelled) return;
-      setMessages((current) => reconcileChat(current, serverMsgs));
-    });
-    return () => {
-      cancelled = true;
-    };
-    // Mount-only: this reconciles the server copy in once, it doesn't
-    // re-run every time `messages` changes (that would fight the writes
-    // this same tab is making).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   // Once a transcript persists on disk it's a record of where the user's
   // been and where they were going — give them a way to delete it. Slots
   // that reference geocoded/in-flight state don't survive a refresh anyway,
-  // so clear them too rather than leave them stale. The Trash button implies
-  // the durable copy is gone too, not just localStorage.
+  // so clear them too rather than leave them stale.
   const clearConversation = () => {
+    epoch.current += 1; // any in-flight turn is now stale (each turn holds its own captured epoch)
     clearChat();
-    deleteMemory();
     setMessages([INTRO_MESSAGE]);
     lastIntent.current = null;
+    lastCard.current = null;
     pending.current = null;
+    // Release the composer now rather than when the stalled turn finally settles
+    // (up to 45s); the epoch guard discards its reply. The turn's own finally only
+    // touches busy if it is still the current conversation's turn.
+    setBusy(false);
   };
 
   const fireReminder = useCallback((rem) => {
-    say('assistant', `⏰ **Reminder:** ${rem.label}`);
+    append('assistant', `⏰ **Reminder:** ${rem.label}`);
     if ('Notification' in window && Notification.permission === 'granted') {
       new Notification('Aether reminder', { body: rem.label });
     }
@@ -319,12 +333,13 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
   }, []);
 
   const handleWeatherIn = async (place, meta = {}) => {
-    const { handler = 'weather-in', rawText = place } = meta;
+    const { handler = 'weather-in', rawText = place, epoch: myEpoch = epoch.current } = meta;
+    const sayAssistant = (text, extra) => say('assistant', text, extra, myEpoch);
     const startedAt = Date.now();
     try {
       const data = await fetchWeatherByCity(place);
       const card = toCard(data);
-      lastIntent.current = { type: 'weather', place: card.name };
+      if (!isStaleTurn(myEpoch)) lastIntent.current = { type: 'weather', place: card.name };
       sayAssistant(`Here's **${card.name}** right now — ${card.condition.toLowerCase()}, ${card.temp}°.`, {
         kind: 'weather',
         data: card,
@@ -354,7 +369,8 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
   };
 
   const handleNavigation = async (nav, meta = {}) => {
-    const { handler = 'route', rawText = nav.destText } = meta;
+    const { handler = 'route', rawText = nav.destText, epoch: myEpoch = epoch.current } = meta;
+    const sayAssistant = (text, extra) => say('assistant', text, extra, myEpoch);
     const startedAt = Date.now();
     const w = weatherRef.current;
     const here = w && Number.isFinite(w.lat) ? { lat: w.lat, lon: w.lon } : null;
@@ -399,13 +415,13 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
         });
         return;
       }
-      return await runRoute(nav, originLoc, pin, { handler, rawText });
+      return await runRoute(nav, originLoc, pin, { handler, rawText, epoch: myEpoch });
     }
 
     // Bias the destination search around the origin — you drive from there.
     const candidates = await geocodeCandidates(nav.destText, originLoc);
     if (!candidates.length) {
-      pending.current = { nav, originLoc };
+      if (!isStaleTurn(myEpoch)) pending.current = { nav, originLoc };
       sayAssistant(
         `I couldn't find “${nav.destText}”. Try adding the city — or paste a Google Maps link and I'll use that exact spot.`
       );
@@ -422,9 +438,9 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
       return;
     }
     // One clear hit: just go. Several: ask, rather than betting on the top one.
-    if (candidates.length === 1) return await runRoute(nav, originLoc, candidates[0], { handler, rawText });
+    if (candidates.length === 1) return await runRoute(nav, originLoc, candidates[0], { handler, rawText, epoch: myEpoch });
 
-    pending.current = { nav, originLoc };
+    if (!isStaleTurn(myEpoch)) pending.current = { nav, originLoc };
     // The question carries its own context: picking from an older picker must
     // route that request, not whichever one was asked most recently.
     sayAssistant(`I found a few places called “${nav.destText}” — which one did you mean?`, {
@@ -441,9 +457,38 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
     });
   };
 
+  // The card half of a route answer, shared by the deterministic path (runRoute,
+  // which adds its own narration) and the LLM path (renderAiRoute, which must not).
+  const routeCard = (originLoc, destLoc, result) => ({
+    kind: 'route',
+    data: { origin: originLoc, dest: destLoc, routes: result.routes, bestIndex: result.bestIndex },
+  });
+
+  // The LLM already wrote the prose for a route it looked up with get_route, so
+  // draw ONLY the card (no second narration, no logTurn — the AI turn is already
+  // logged). Failure is silent: a good text answer is never replaced by an error.
+  const renderAiRoute = async (action, myEpoch) => {
+    try {
+      const { origin, dest } = action;
+      const result = await getRoutesWithRain(origin, dest, Date.now());
+      if (isStaleTurn(myEpoch)) return;
+      lastIntent.current = {
+        type: 'route',
+        nav: { destText: dest.name, isUrl: false },
+        origin,
+        dest,
+      };
+      lastCard.current = { ...routeCard(origin, dest, result).data, shownAt: Date.now() };
+      say('assistant', '', routeCard(origin, dest, result), myEpoch);
+    } catch {
+      /* keep the text answer */
+    }
+  };
+
   // Resolve a picked/pasted destination into an actual routed answer.
   const runRoute = async (nav, originLoc, destLoc, meta = {}) => {
-    const { handler = 'route', rawText = nav.destText } = meta;
+    const { handler = 'route', rawText = nav.destText, epoch: myEpoch = epoch.current } = meta;
+    const sayAssistant = (text, extra) => say('assistant', text, extra, myEpoch);
     const startedAt = Date.now();
     const departAt = nav.departAt || Date.now();
     let result;
@@ -467,37 +512,13 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
     }
 
     const best = result.routes[result.bestIndex];
-    const WORD = {
-      dry: 'stays dry the whole way',
-      light: 'catches a little light rain',
-      wet: 'runs into rain',
-      unknown: "couldn't be checked for rain",
-    };
-    const ADVICE = {
-      dry: '\n☂️ You should stay dry — no umbrella needed.',
-      light: '\n🌂 Maybe pack an umbrella — only light rain forecast on the way.',
-      wet: '\n☔ Take an umbrella — rain is forecast while you’d be driving.',
-      unknown: '\n🤷 I couldn’t reach the weather service for this route, so I can’t call it either way.',
-    };
-    const lvl = best.rain.level;
-    const leaving = nav.departAt ? `leaving ${formatClock(departAt)}` : 'leaving now';
+    const summary = routeSummary(destLoc.name, best.rain.level, nav.departAt);
 
-    let summary = `Here's the route from **${originLoc.name}** to **${destLoc.name}**.\n`;
-    summary +=
-      result.routes.length > 1
-        ? `I compared ${result.routes.length} routes — the **recommended** one is ${best.distanceKm.toFixed(1)} km (~${Math.round(best.durationMin)} min) and ${WORD[lvl]}.`
-        : `It's ${best.distanceKm.toFixed(1)} km (~${Math.round(best.durationMin)} min) and ${WORD[lvl]}.`;
-    // Say what was actually checked — the claim is about the drive, not about now.
-    if (lvl !== 'unknown') {
-      summary += `\nChecked the forecast along the way for ${leaving}, arriving ~${formatClock(best.arriveAt)}.`;
+    if (!isStaleTurn(myEpoch)) {
+      lastIntent.current = { type: 'route', nav, origin: originLoc, dest: destLoc };
+      lastCard.current = { origin: originLoc, dest: destLoc, routes: result.routes, bestIndex: result.bestIndex, shownAt: Date.now() };
     }
-    if (nav.asksRain || lvl !== 'dry') summary += ADVICE[lvl];
-
-    lastIntent.current = { type: 'route', nav, origin: originLoc, dest: destLoc };
-    sayAssistant(summary, {
-      kind: 'route',
-      data: { origin: originLoc, dest: destLoc, routes: result.routes, bestIndex: result.bestIndex },
-    });
+    sayAssistant(summary, routeCard(originLoc, destLoc, result));
     logTurn({
       handler,
       message: rawText,
@@ -514,11 +535,16 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
     if (busy) return;
     setMessages((prev) => prev.map((m) => (m.id === msg.id ? { ...m, data: { ...m.data, chosen: choice } } : m)));
     pending.current = null; // this question is answered
+    const myEpoch = epoch.current;
     setBusy(true);
     try {
-      await runRoute(msg.data.nav, msg.data.origin, choice, { handler: 'route', rawText: msg.data.nav.destText });
+      await runRoute(msg.data.nav, msg.data.origin, choice, { handler: 'route', rawText: msg.data.nav.destText, epoch: myEpoch });
     } finally {
-      setBusy(false);
+      // Cleared mid-turn: clearConversation already released busy, and a newer turn
+      // may own busy by now — don't clobber it.
+      if (myEpoch === epoch.current) {
+        setBusy(false);
+      }
     }
   };
 
@@ -527,6 +553,9 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
     const text = input.trim();
     if (!text || busy) return;
     setInput('');
+    // Captured before anything else: this turn's identity for every guarded write.
+    const myEpoch = epoch.current;
+    const sayAssistant = (reply, extra) => say('assistant', reply, extra, myEpoch);
     say('user', text);
 
     // Reminders (synchronous)
@@ -569,15 +598,15 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
           });
           return;
         }
-        return await runRoute(p.nav, p.originLoc, pin, { handler: 'route', rawText: text });
+        return await runRoute(p.nav, p.originLoc, pin, { handler: 'route', rawText: text, epoch: myEpoch });
       }
 
       // Rich, action-backed intents render cards/maps.
       const nav = parseNavigation(text);
-      if (nav) return await handleNavigation(nav, { handler: 'route', rawText: text });
+      if (nav) return await handleNavigation(nav, { handler: 'route', rawText: text, epoch: myEpoch });
 
       const place = parseWeatherIn(text);
-      if (place) return await handleWeatherIn(place, { handler: 'weather-in', rawText: text });
+      if (place) return await handleWeatherIn(place, { handler: 'weather-in', rawText: text, epoch: myEpoch });
 
       // "What about Central Park?" / "how about at 8pm?" — re-ask the previous
       // question with just that part swapped.
@@ -593,17 +622,17 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
                 isUrl: false,
                 departAt: fu.departAt ?? last.nav.departAt,
               },
-              { handler: 'follow-up', rawText: text }
+              { handler: 'follow-up', rawText: text, epoch: myEpoch }
             );
           }
-          return await handleWeatherIn(fu.place, { handler: 'follow-up', rawText: text });
+          return await handleWeatherIn(fu.place, { handler: 'follow-up', rawText: text, epoch: myEpoch });
         }
         if (fu.departAt && last.type === 'route') {
           return await runRoute(
             { ...last.nav, departAt: fu.departAt },
             last.origin,
             last.dest,
-            { handler: 'follow-up', rawText: text }
+            { handler: 'follow-up', rawText: text, epoch: myEpoch }
           );
         }
       }
@@ -626,12 +655,18 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
           provider: out.provider,
           latency_ms: Date.now() - startedAt,
         });
+        const routeAction = Array.isArray(out.actions) && out.actions.find((a) => a && a.kind === 'route');
+        if (routeAction) await renderAiRoute(routeAction, myEpoch);
       } catch {
         sayAssistant(answer(text, weatherRef.current, reminders, hourlyRef.current, forecastRef.current));
         logTurn({ handler: 'fallback', message: text, outcome: 'ai_error', latency_ms: Date.now() - startedAt });
       }
     } finally {
-      setBusy(false);
+      // Cleared mid-turn: clearConversation already released busy, and a newer turn
+      // may own busy by now — don't clobber it.
+      if (myEpoch === epoch.current) {
+        setBusy(false);
+      }
     }
   };
 
@@ -701,7 +736,10 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
                 <Bell size={12} /> {activeCount}
               </span>
             )}
-            {/* The transcript now persists to disk, so give a way to delete it. */}
+            {/* The transcript now persists to disk, so give a way to delete it. Deliberately NOT
+                disabled while `busy`: a stalled turn would leave the only delete control dead. The
+                epoch/turnEpoch guard in say() is what makes clearing mid-turn safe (a late reply is
+                dropped), not a disabled attribute — don't re-add one. */}
             <button
               onClick={clearConversation}
               aria-label="Clear chat"

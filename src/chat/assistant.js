@@ -54,6 +54,22 @@ export const parseReminder = (text) => {
 export const formatClock = (epoch) =>
   new Date(epoch).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 
+// The one-line prose for a route reply. The card already shows endpoints,
+// distance, duration, rain status and arrival, so this carries only the verdict.
+// The destination name stays because stripExtras drops the card when the
+// transcript is persisted: after a refresh this line is all that survives, and a
+// bare "no umbrella needed" would mean nothing. `departAt` is passed only when
+// the user asked for a specific time; the card says "Arriving", never "leaving".
+const ROUTE_VERDICT = {
+  dry: 'stays dry the whole way, no umbrella needed.',
+  light: 'a little light rain on the way, maybe pack an umbrella.',
+  wet: "rain forecast while you'd be driving, take an umbrella.",
+  unknown: "I couldn't check rain along this route.",
+};
+export const routeSummary = (destName, level, departAt) =>
+  `**${destName}** — ${ROUTE_VERDICT[level] || ROUTE_VERDICT.unknown}` +
+  (departAt ? ` Leaving ${formatClock(departAt)}.` : '');
+
 // "2026-07-16 20:00" (WeatherAPI hour.time) → "8 PM".
 const hourLabel = (time) => {
   const d = new Date(String(time).replace(' ', 'T'));

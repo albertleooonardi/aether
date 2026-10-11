@@ -2,7 +2,7 @@
 // because `messages` was a plain useState with a hardcoded intro. These
 // exercise the pure save/load/strip helpers directly — there's no jsdom
 // render test for this widget, and adding one is out of scope here.
-import { stripExtras, loadChat, saveChat, clearChat, reconcileChat } from './ChatWidget';
+import { displayedContext, stripExtras, loadChat, saveChat, clearChat } from './ChatWidget';
 
 const CHAT_STORAGE_KEY = 'vrijeme.chat.v1';
 
@@ -118,57 +118,57 @@ describe('loadChat', () => {
   });
 });
 
-describe('reconcileChat', () => {
-  test('an untouched intro placeholder does not block hydrating a real server transcript', () => {
-    const current = [{ id: 'intro', role: 'assistant', text: 'Hi' }];
-    const server = [
-      { role: 'user', text: 'Weather in Surabaya' },
-      { role: 'assistant', text: "Here's Surabaya right now." },
-    ];
-    const result = reconcileChat(current, server);
-    expect(result.map(({ role, text }) => ({ role, text }))).toEqual(server);
-  });
-
-  test('a longer local transcript is kept — a fresh tab must not wipe real history', () => {
-    const current = [
-      { id: '1', role: 'user', text: 'a' },
-      { id: '2', role: 'assistant', text: 'b' },
-      { id: '3', role: 'user', text: 'c' },
-    ];
-    const server = [{ role: 'user', text: 'a' }];
-    expect(reconcileChat(current, server)).toBe(current);
-  });
-
-  test('a longer server transcript replaces a shorter local one', () => {
-    const current = [{ id: '1', role: 'user', text: 'a' }];
-    const server = [
-      { role: 'user', text: 'a' },
-      { role: 'assistant', text: 'b' },
-      { role: 'user', text: 'c' },
-    ];
-    const result = reconcileChat(current, server);
-    expect(result.map(({ role, text }) => ({ role, text }))).toEqual(server);
-  });
-
-  test('an empty or missing server transcript never overwrites local (no server-side data loss inferred from silence)', () => {
-    const current = [{ id: '1', role: 'user', text: 'a' }];
-    expect(reconcileChat(current, [])).toBe(current);
-    expect(reconcileChat(current, null)).toBe(current);
-    expect(reconcileChat(current, undefined)).toBe(current);
-  });
-
-  test('equal length keeps local rather than churning ids for no gain', () => {
-    const current = [{ id: '1', role: 'user', text: 'a' }];
-    const server = [{ role: 'user', text: 'a' }];
-    expect(reconcileChat(current, server)).toBe(current);
-  });
-});
-
 describe('clearChat', () => {
   test('wipes the stored transcript', () => {
     saveChat([{ id: '1', role: 'user', text: 'hi' }]);
     expect(window.localStorage.getItem(CHAT_STORAGE_KEY)).not.toBeNull();
     clearChat();
     expect(window.localStorage.getItem(CHAT_STORAGE_KEY)).toBeNull();
+  });
+});
+
+describe('displayedContext', () => {
+  const now = new Date('2026-07-16T10:00:00').getTime();
+  const rt = (km, min, level) => ({
+    distanceKm: km,
+    durationMin: min,
+    rain: { level, segments: [{ from: [1, 2], to: [3, 4], level }] },
+    coords: [[1, 2], [3, 4]],
+  });
+  const card = {
+    origin: { name: 'Home', lat: 1, lon: 2 },
+    dest: { name: 'Mall', lat: 3, lon: 4 },
+    routes: [rt(32.14, 30.2, 'dry'), rt(36.4, 37.6, 'light')],
+    bestIndex: 0,
+    shownAt: now,
+  };
+
+  it('shapes a route card compactly with the labels the card renders', () => {
+    const d = displayedContext(card, [], now);
+    expect(d.route.origin).toBe('Home');
+    expect(d.route.destination).toBe('Mall');
+    expect(d.route.options).toEqual([
+      { label: 'Recommended', distance_km: 32.1, duration_min: 30, rain: 'dry' },
+      { label: 'Option 2', distance_km: 36.4, duration_min: 38, rain: 'light' },
+    ]);
+    expect(d.reminders).toBeUndefined();
+  });
+
+  it('excludes coordinates and geometry', () => {
+    const json = JSON.stringify(displayedContext(card, [], now));
+    expect(json).not.toMatch(/lat|lon|coords|segments|from|"to"/);
+  });
+
+  it('keeps only active reminders', () => {
+    const d = displayedContext(null, [
+      { label: 'old', dueEpoch: now - 1000 },
+      { label: 'umbrella', dueEpoch: now + 3600000 },
+    ], now);
+    expect(d.reminders).toEqual([{ label: 'umbrella', due: expect.any(String) }]);
+    expect(d.route).toBeUndefined();
+  });
+
+  it('returns null when nothing is shown', () => {
+    expect(displayedContext(null, [{ label: 'old', dueEpoch: now - 1 }], now)).toBeNull();
   });
 });
