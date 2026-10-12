@@ -177,3 +177,72 @@ describe('chatHandler surfaces get_route endpoints as actions', () => {
     expect(res.body.actions[0].origin.name).toBe('Grand Indonesia');
   });
 });
+
+// A provider that accepts the connection and then never answers is the most
+// expensive failure there is — it costs the whole 30s timeout, where a 429 costs
+// milliseconds. isQuota() matched only quota signatures, so 'provider timeout'
+// never benched the provider and a hung primary was retried on EVERY message:
+// measured, 6 of 15 replies took over 25s with Gemini answering none of them.
+describe('a hung provider is benched, not retried forever', () => {
+  const { isBenchable } = require('../../api/_lib/core');
+
+  test('a timeout benches the provider', () => {
+    expect(isBenchable(new Error('provider timeout'))).toBe(true);
+  });
+
+  test('connection-level failures bench it too', () => {
+    for (const m of ['socket hang up', 'ECONNRESET', 'ECONNREFUSED', 'fetch failed', 'getaddrinfo ENOTFOUND x']) {
+      expect(isBenchable(new Error(m))).toBe(true);
+    }
+  });
+
+  test('quota and rate-limit signatures still bench it', () => {
+    expect(isBenchable(Object.assign(new Error('x'), { status: 429 }))).toBe(true);
+    expect(isBenchable(Object.assign(new Error('x'), { status: 402 }))).toBe(true);
+    expect(isBenchable(new Error('You exceeded your current quota'))).toBe(true);
+    expect(isBenchable(new Error('Rate limit reached for model'))).toBe(true);
+  });
+
+  test('an ordinary error does NOT bench the provider', () => {
+    expect(isBenchable(new Error('contents is not specified'))).toBe(false);
+    expect(isBenchable(Object.assign(new Error('bad request'), { status: 400 }))).toBe(false);
+  });
+});
+
+// toolRainOverview decided "is it raining" by text-matching the condition label,
+// which is the test RouteService documents as wrong. Live, it named Jakarta,
+// Bandung, Semarang and Denpasar as raining — all code 1063 "Patchy rain nearby",
+// which the route scorer in the same app calls dry. One app, two answers.
+describe('rain overview agrees with the route scorer', () => {
+  const { isRainingNow } = require('../../api/_lib/core');
+  const at = (code, precip_mm, text) => ({ condition: { code, text }, precip_mm });
+
+  test('"Patchy rain nearby" (1063) is NOT rain, however the label reads', () => {
+    expect(isRainingNow(at(1063, 0.14, 'Patchy rain nearby'))).toBe(false);
+    expect(isRainingNow(at(1063, 0.01, 'Patchy rain nearby'))).toBe(false);
+  });
+
+  test('falling precipitation (code >= 1150) is rain', () => {
+    expect(isRainingNow(at(1183, 1.31, 'Light rain'))).toBe(true);
+    expect(isRainingNow(at(1153, 0, 'Light drizzle'))).toBe(true);
+    expect(isRainingNow(at(1213, 0, 'Patchy light snow'))).toBe(true);
+  });
+
+  test('a dry label with real accumulation is still rain', () => {
+    expect(isRainingNow(at(1030, 0.9, 'Mist'))).toBe(true);
+  });
+
+  test('a trace amount is a rounding artifact, not weather', () => {
+    expect(isRainingNow(at(1063, 0.2, 'Patchy rain nearby'))).toBe(false);
+  });
+
+  test('plainly dry conditions are dry', () => {
+    expect(isRainingNow(at(1036, 0, 'Smoky haze'))).toBe(false);
+    expect(isRainingNow(at(1000, 0, 'Sunny'))).toBe(false);
+  });
+
+  test('a malformed payload does not throw or claim rain', () => {
+    expect(isRainingNow(undefined)).toBe(false);
+    expect(isRainingNow({})).toBe(false);
+  });
+});

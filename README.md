@@ -308,7 +308,7 @@ Note that CRA's `proxy` in `package.json` points at `3001`; update it if you mov
 |---|---|---|
 | `WEATHER_API_KEY` | falls back to the `REACT_APP_` one | Server-side WeatherAPI key for the chat's own tool lookups. Lets you keep an unrestricted key on the server and expose only a restricted one in the bundle |
 | `GEMINI_API_KEY` | — | Enables Gemini. Blank = provider skipped |
-| `GEMINI_MODEL` | `gemini-flash-latest` | Gemini model id |
+| `GEMINI_MODEL` | `gemini-flash-lite-latest` | Gemini model id. The non-lite `gemini-flash-latest` exhausts the free daily quota fast, and an exhausted tier may hang rather than answer 429 |
 | `GEMINI_THINKING_BUDGET` | `0` | Gemini thinking tokens (`0` = off) |
 | `GROQ_API_KEY` | — | Enables Groq. Blank = provider skipped |
 | `GROQ_MODEL` | `llama-3.3-70b-versatile` | Groq model id |

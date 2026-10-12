@@ -17,7 +17,12 @@ require('dotenv').config({
 const https = require('https');
 
 const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-flash-latest';
+// gemini-flash-lite-latest, not gemini-flash-latest: on the free tier the latter
+// exhausts its daily quota almost immediately, and an exhausted tier does not
+// always answer 429 — it was measured holding the socket open past the full 30s
+// timeout, on every call. Lite draws on a separate quota bucket and answered in
+// ~1s under the same key. Override with GEMINI_MODEL on a paid tier.
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-flash-lite-latest';
 const GROQ_KEY = process.env.GROQ_API_KEY || '';
 const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
 const WEATHER_KEY = process.env.WEATHER_API_KEY || process.env.REACT_APP_WEATHER_API_KEY || '';
@@ -31,6 +36,7 @@ const MAX_OUTPUT = Number(process.env.AI_MAX_OUTPUT_TOKENS || 450);
 const HISTORY_TURNS = Number(process.env.AI_HISTORY_TURNS || 6);
 const COOLDOWN_MS = Number(process.env.AI_COOLDOWN_MS || 30 * 60 * 1000);
 const GEMINI_BUDGET = Number(process.env.GEMINI_TOKEN_BUDGET || 0);
+const THINKING_BUDGET = Number(process.env.GEMINI_THINKING_BUDGET || 0);
 const GROQ_BUDGET = Number(process.env.GROQ_TOKEN_BUDGET || 0);
 const PRIMARY = (process.env.AI_PRIMARY || 'gemini').toLowerCase();
 const ORDER = PRIMARY === 'groq' ? ['groq', 'gemini'] : ['gemini', 'groq'];
@@ -89,6 +95,15 @@ Rules:
   already know where "here" is — never ask the user what city they are in. If one
   message uses both, "there" is the place most recently discussed and "here" is the
   loaded city; answer the comparison directly instead of asking which is which.
+- Every weather tool result carries a "place" field: the location the lookup
+  ACTUALLY resolved to. The geocoder matches loosely and will silently substitute
+  somewhere else — "Zyrthandia Prime" returned weather for Prime, Viseu, Portugal.
+  If "place" is not plausibly the place the user asked about (different country or
+  region, or a name that doesn't match), say which place you used and offer to try
+  again, instead of reporting the numbers as though they were the right ones.
+- get_route gives you the weather at the DESTINATION only, not along the road. Say
+  what you know ("it's dry in Bandung when you'd arrive"), never "you won't get wet
+  on the way" — the route card beside your reply is what covers the road itself.
 - A route map is drawn automatically for any routing question. NEVER tell the user
   to rephrase to get one, and never offer "a map view" as though it were extra.
 - When "displayed.route" is present, do not restate its distance, duration or
@@ -197,6 +212,25 @@ async function toolWeather(q) {
   };
 }
 
+// Is precipitation actually falling HERE, right now?
+//
+// This is the same rule RouteService.levelAt() applies, and it has to be: the
+// app cannot answer "is it raining in Jakarta?" one way on the route card and
+// another way in the chat. The previous test here was
+//   /rain|drizzle|shower|thunder/.test(condition.text) || precip_mm > 0
+// which is exactly the text match RouteService documents as wrong. It counted
+// code 1063 "Patchy rain nearby" — rain AROUND the point, not on it, and the
+// default daytime condition across much of the tropics — so a live check named
+// Jakarta, Bandung, Semarang and Denpasar as raining while the route scorer in
+// the same app called all four dry.
+//
+// The amount floor matches too: RouteService treats ≤0.2mm as dry, because a
+// trace reading like Bandung's 0.01mm is a rounding artifact, not weather.
+const RAIN_CODE_MIN = 1150;
+const TRACE_MM = 0.2;
+const isRainingNow = (current) =>
+  (current?.condition?.code ?? 0) >= RAIN_CODE_MIN || (current?.precip_mm ?? 0) > TRACE_MM;
+
 async function toolRainOverview(locations) {
   if (!WEATHER_KEY) return { error: 'no weather api key configured' };
   const list = (Array.isArray(locations) ? locations : []).slice(0, 12);
@@ -212,8 +246,7 @@ async function toolRainOverview(locations) {
         return {
           place: [data.location.name, data.location.region].filter(Boolean).join(', '),
           condition: data.current.condition.text,
-          raining_now:
-            /rain|drizzle|shower|thunder/i.test(data.current.condition.text) || (data.current.precip_mm ?? 0) > 0,
+          raining_now: isRainingNow(data.current),
           rain_chance_today_pct: day?.daily_chance_of_rain ?? null,
           temp_c: Math.round(data.current.temp_c),
         };
@@ -349,10 +382,26 @@ const markExhausted = (p, msg) => {
   usage[p].exhaustedUntil = Date.now() + COOLDOWN_MS;
   usage[p].lastError = msg;
 };
-const isQuota = (e) => {
+// Reasons to SIDELINE a provider rather than retry it on the next message.
+//
+// Quota is the obvious one. The other is a provider that accepts the connection
+// and then never answers: measured, `gemini-flash-latest` held the socket open
+// past the 30s timeout on every call while the same key answered in 1.6s on
+// gemini-flash-lite-latest. A timeout raises 'provider timeout', which matched
+// none of the quota signatures, so markExhausted() was never called and the
+// dead primary was retried — and hung — on EVERY message, indefinitely. The
+// user paid the full 30s before the backup answered, forever.
+//
+// A hang is in fact the most expensive failure there is (a 429 costs
+// milliseconds; a hang costs the whole timeout), so it is the LAST thing that
+// should be exempt from the cooldown. Connection-level failures go here too:
+// a provider that is refusing or unreachable will not recover within one turn.
+const isBenchable = (e) => {
   const s = e.status;
   const m = (e.message || '').toLowerCase();
-  return s === 429 || s === 402 || /quota|exhaust|rate.?limit|insufficient|billing|too many|out of|limit reached/.test(m);
+  if (s === 429 || s === 402) return true;
+  if (/quota|exhaust|rate.?limit|insufficient|billing|too many|out of|limit reached/.test(m)) return true;
+  return /timeout|timed out|socket hang up|econnreset|econnrefused|enotfound|network|fetch failed/.test(m);
 };
 
 const snapshot = () => {
@@ -438,7 +487,12 @@ async function callGemini(messages, context, actions) {
       generationConfig: {
         temperature: 0.6,
         maxOutputTokens: MAX_OUTPUT,
-        thinkingConfig: { thinkingBudget: Number(process.env.GEMINI_THINKING_BUDGET || 0) },
+        // "off" has to mean OMITTED, not sent as zero. Not every Gemini model
+        // accepts thinkingConfig at all: gemini-flash-lite-latest rejects the
+        // whole request with 400 "Request contains an invalid argument" when the
+        // field is present, even set to 0 — and since the budget defaults to 0,
+        // the field was always being sent, so that model could never answer.
+        ...(THINKING_BUDGET > 0 ? { thinkingConfig: { thinkingBudget: THINKING_BUDGET } } : {}),
       },
     };
     const { status, json: body } = await httpsPostJSON(
@@ -569,7 +623,7 @@ async function generate(messages, context) {
       };
     } catch (e) {
       lastErr = e;
-      if (isQuota(e)) markExhausted(p, e.message);
+      if (isBenchable(e)) markExhausted(p, e.message);
       else usage[p].lastError = e.message;
     }
   }
@@ -844,6 +898,10 @@ module.exports = {
   trimmed,
   ORDER,
   META,
+  // Exported for the regression tests: both decide something the app must not
+  // get wrong twice (which failures bench a provider; what counts as rain).
+  isBenchable,
+  isRainingNow,
   healthHandler,
   usageHandler,
   chatHandler,

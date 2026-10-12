@@ -40,11 +40,24 @@ export const parseReminder = (text) => {
   const due = parseWhen(text);
   if (!due) return null;
 
+  // The label is what the notification shows, so everything that is phrasing
+  // rather than content has to come off the FRONT. `remind me to` alone wasn't
+  // anchored, so a polite lead-in survived it: "Can you remind me to bring an
+  // umbrella at 5pm?" produced the label "Can you  bring an umbrella ?". And
+  // "set a reminder to …" cleared the includes('remind') gate above while
+  // matching no strip pattern at all, so the entire sentence became the label.
   let label = text
-    .replace(/remind me( to)?/i, '')
+    .replace(/^\s*(?:can|could|would|will)\s+you\s+(?:please\s+)?/i, '')
+    .replace(/^\s*(?:please|hey|ok(?:ay)?|yo)[,\s]+/i, '')
+    .replace(/^\s*(?:set|add|create|make)\s+(?:me\s+)?(?:a|an)\s+reminder\s*(?:for|to)?\s*/i, '')
+    .replace(/\bremind me( to)?/i, '')
     .replace(/\bin\s+\d+\s*(minutes?|mins?|hours?|hrs?|h)\b/i, '')
     .replace(/\bat\s+\d{1,2}(:\d{2})?\s*(am|pm)?/i, '')
     .replace(/^\s*to\s+/i, '')
+    // Collapse the gap a mid-sentence strip leaves behind, and drop the trailing
+    // punctuation of the original question ("… an umbrella ?").
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\s*[?!.,;:]+\s*$/, '')
     .trim();
   if (!label) label = 'your reminder';
 
@@ -200,7 +213,26 @@ export const answer = (text, weather, reminders = [], hourly = [], forecast = []
   // above. sunny/sunshine/sunscreen/sunburn are spelled out because they are
   // genuine UV questions and a bare \bsun\b would no longer reach them.
   if (t.includes('uv') || /\bsun(?:ny|shine|screen|burn)?\b/.test(t)) {
-    return `The UV index is ${weather.uv}. ${weather.uv >= 6 ? 'High — wear sunscreen.' : 'Moderate to low.'}`;
+    // A single threshold at 6 put UV 0 in the same sentence as UV 5 — so after
+    // dark, when the index is always 0, the app answered "Moderate to low".
+    // There is no UV at night; say so, and otherwise use the standard WHO bands
+    // rather than one cut. uvMax gives the daytime peak, which is the number
+    // someone asking at night actually wants.
+    if (weather.isDay === 0 || weather.uv === 0) {
+      const peak = weather.uvMax ? ` Today's peak was ${weather.uvMax}.` : '';
+      return `No UV right now — the sun is down.${peak}`;
+    }
+    const band =
+      weather.uv >= 11
+        ? 'Extreme — avoid the sun around midday.'
+        : weather.uv >= 8
+        ? 'Very high — sunscreen and shade.'
+        : weather.uv >= 6
+        ? 'High — wear sunscreen.'
+        : weather.uv >= 3
+        ? 'Moderate — sunscreen if you are out a while.'
+        : 'Low — no protection needed.';
+    return `The UV index is ${weather.uv}. ${band}`;
   }
   if (t.includes('forecast') || t.includes('tomorrow') || t.includes('today')) {
     return `Today in ${weather.city}: ${weather.description.toLowerCase()}, ${weather.todayLow}°–${weather.todayHigh}°, ${weather.chanceOfRain}% chance of rain.`;

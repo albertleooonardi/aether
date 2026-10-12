@@ -1,4 +1,4 @@
-import { answer, routeSummary } from './assistant';
+import { answer, routeSummary, parseReminder } from './assistant';
 
 // Mirrors the shape App.js builds.
 const weather = {
@@ -72,11 +72,23 @@ describe('sunrise and sunset', () => {
     expect(out).toBe('In Jembatanmerah, sunrise is at 05:32 AM and sunset at 05:48 PM.');
   });
 
-  // Tightening the UV test must not cost it the words that really are UV questions.
+  // Tightening the UV test must not cost it the words that really are UV
+  // questions. Asserted on the ROUTING rather than the wording: the fixture's
+  // uv is 0, which now reads "No UV right now" instead of quoting the index, and
+  // the thing this guards is that these reach the UV rule and not the astro one.
   test.each(['what is the uv index', 'is it sunny?', 'do I need sunscreen', 'will I get sunburn'])(
-    '%j still gets the UV index',
+    '%j still gets the UV rule, not the sunrise/sunset rule',
     (text) => {
-      expect(answer(text, weather)).toMatch(/UV index is 0/);
+      const out = answer(text, weather);
+      expect(out).toMatch(/UV/);
+      expect(out).not.toMatch(/sunrise is at/);
+    }
+  );
+
+  test.each(['what is the uv index', 'is it sunny?', 'do I need sunscreen', 'will I get sunburn'])(
+    '%j quotes the actual index when the sun is up',
+    (text) => {
+      expect(answer(text, { ...weather, isDay: 1, uv: 7 })).toMatch(/UV index is 7/);
     }
   );
 
@@ -136,5 +148,67 @@ describe('routeSummary', () => {
   });
   test('stays a single line anchored on the destination', () => {
     expect(routeSummary(D, 'wet')).not.toContain('\n');
+  });
+});
+
+// parseReminder stripped "remind me to" without anchoring it, so a polite lead-in
+// survived into the label the notification shows: "Can you remind me to bring an
+// umbrella at 5pm?" fired a reminder reading "Can you  bring an umbrella ?".
+// "set a reminder to …" was worse — it cleared the includes('remind') gate while
+// matching no strip pattern, so the whole sentence became the label.
+describe('reminder labels are the task, not the phrasing', () => {
+  const label = (s) => parseReminder(s).label;
+
+  test('a polite lead-in is stripped', () => {
+    expect(label('Can you remind me to bring an umbrella at 5pm?')).toBe('bring an umbrella');
+    expect(label('could you remind me to bring an umbrella at 5pm')).toBe('bring an umbrella');
+    expect(label('would you please remind me to bring an umbrella at 5pm')).toBe('bring an umbrella');
+    expect(label('please remind me to bring an umbrella at 5pm')).toBe('bring an umbrella');
+  });
+
+  test('"set a reminder to X" yields X, not the whole sentence', () => {
+    expect(label('set a reminder to bring an umbrella at 5pm')).toBe('bring an umbrella');
+    expect(label('add a reminder to close the windows at 6pm')).toBe('close the windows');
+  });
+
+  test('the plain phrasings still work', () => {
+    expect(label('remind me to bring an umbrella at 5pm')).toBe('bring an umbrella');
+    expect(label('remind me at 5pm to bring an umbrella')).toBe('bring an umbrella');
+    expect(label('remind me in 30 minutes to check the radar')).toBe('check the radar');
+  });
+
+  test('no label left over still reads as something', () => {
+    expect(label('remind me at 5pm')).toBe('your reminder');
+  });
+
+  test('the due time is unaffected by the label fix', () => {
+    const a = parseReminder('remind me to bring an umbrella at 5pm');
+    const b = parseReminder('Can you remind me to bring an umbrella at 5pm?');
+    expect(b.dueEpoch).toBe(a.dueEpoch);
+  });
+});
+
+// The UV reply split at a single threshold of 6, so UV 0 — which is what the
+// index always is after dark — was described as "Moderate to low".
+describe('UV wording', () => {
+  const wx = (over) => ({ city: 'Jakarta', uv: 0, uvMax: 8, isDay: 0, ...over });
+
+  test('there is no UV at night, and the daytime peak is offered instead', () => {
+    const out = answer('what is the uv index', wx());
+    expect(out).toMatch(/no uv right now/i);
+    expect(out).not.toMatch(/moderate to low/i);
+    expect(out).toContain('8');
+  });
+
+  test('a daytime zero is also not "moderate"', () => {
+    expect(answer('uv?', wx({ isDay: 1, uv: 0 }))).toMatch(/no uv right now/i);
+  });
+
+  test('the WHO bands are distinguished rather than lumped together', () => {
+    expect(answer('uv?', wx({ isDay: 1, uv: 2 }))).toMatch(/low/i);
+    expect(answer('uv?', wx({ isDay: 1, uv: 4 }))).toMatch(/moderate/i);
+    expect(answer('uv?', wx({ isDay: 1, uv: 7 }))).toMatch(/high/i);
+    expect(answer('uv?', wx({ isDay: 1, uv: 9 }))).toMatch(/very high/i);
+    expect(answer('uv?', wx({ isDay: 1, uv: 11 }))).toMatch(/extreme/i);
   });
 });

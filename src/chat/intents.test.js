@@ -250,3 +250,26 @@ describe('departure time', () => {
     expect(nav.departAt).toBeNull();
   });
 });
+
+// Two of the most natural phrasings in the app's own domain missed the parsers
+// entirely and fell through to the model — costing a call and, for routing, the
+// guaranteed route card.
+describe('phrasings that used to fall through to the LLM', () => {
+  test('"how do I get to X" is a routing question', () => {
+    expect(parseNavigation('how do I get to Bandung?')).toMatchObject({ destText: 'Bandung' });
+    expect(parseNavigation('how can I get to Grand Indonesia')).toMatchObject({ destText: 'Grand Indonesia' });
+  });
+
+  test('"get" alone is not a nav verb — only "get to"', () => {
+    expect(parseNavigation('where can I get an umbrella to stay dry')).toBeNull();
+  });
+
+  test('"how is it in X" is a weather question', () => {
+    expect(parseWeatherIn('how is it in Medan right now?')).toBe('Medan');
+    expect(parseWeatherIn("how's it in Surabaya")).toBe('Surabaya');
+  });
+
+  test('"how is it going in X" is not', () => {
+    expect(parseWeatherIn('how is it going in Jakarta')).toBeNull();
+  });
+});

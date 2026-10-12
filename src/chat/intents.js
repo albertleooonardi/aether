@@ -50,8 +50,12 @@ const NOT_A_PLACE =
 // \b…\b: a bare "commute"/"travel" can never match "commuting"/"travelling", so
 // those phrasings hit the same fall-through bug "going to" was fixed for. The
 // doubled l is optional (travell?) to cover both the British and American spelling.
+// "get" earns its place only immediately before "to" — "how do I get to Bandung?"
+// is one of the most natural ways to ask for directions, and missed the parser
+// entirely. The lookahead is what keeps it safe: a bare "get" would also fire on
+// "where can I get an umbrella to stay dry", which is not a routing question.
 const NAV =
-  '(?:routes?|directions?|navigate|navigation|driving|drive|commut(?:ing|es?)|travell?(?:ing|s|ed)?|head(?:ing|ed)?|way|go(?:ing|nna)?|omw|on my way|visit(?:ing)?|leaving)';
+  '(?:routes?|directions?|navigate|navigation|driving|drive|commut(?:ing|es?)|travell?(?:ing|s|ed)?|head(?:ing|ed)?|way|go(?:ing|nna)?|get(?:ting)?(?=\\s+to\\b)|omw|on my way|visit(?:ing)?|leaving)';
 
 // "route from X to Y", "directions to Y", "check the route for going to Y",
 // or any of those pointed at a pasted Google Maps link.
@@ -182,7 +186,13 @@ export const parseWeatherIn = (text) => {
   const t = text.toLowerCase();
   // \bhumid\b never matches "humidity", so "humidity of Pontianak" used to fall
   // through and get answered with the current city's number. Match inflections.
+  // "how is it in Medan right now?" asks about the weather without naming any
+  // weather word, so the keyword gate below dropped it. The subject has to stay
+  // narrow — "it"/"things"/"the weather" followed directly by in/at — or "how is
+  // it going in Jakarta" would be read as a weather question too.
+  const IDIOM = /\bhow(?:'s|\s+(?:is|are))?\s+(?:it|things|the weather)\s+(?:in|at)\s+/i;
   if (
+    !IDIOM.test(t) &&
     !/\b(weather|forecast|temperature|temp|rain(?:ing|y)?|hot|cold|warm|humid(?:ity)?|wind(?:y)?|sun(?:ny)?|uv|dew ?point|pressure|visibility|aqi|air quality|snow(?:ing)?|storm(?:s|y)?|climate|conditions?)\b/.test(
       t
     )
