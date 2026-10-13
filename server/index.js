@@ -41,7 +41,7 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === 'GET' && pathname === '/api/geocode') {
     return core
-      .geocodeHandler(params.q, params.near, params.limit)
+      .geocodeHandler(params.q, params.near, params.limit, params.mode)
       .then(({ status, body }) => json(res, status, body));
   }
   if (req.method === 'GET' && pathname === '/api/resolve') {

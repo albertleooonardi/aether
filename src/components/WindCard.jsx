@@ -1,68 +1,54 @@
 import React from 'react';
 import { Wind } from 'lucide-react';
+import { Cell, Value } from './DetailCell';
 
 // Dial, labels and hub are drawn in `ink` (via currentColor) so the compass
-// inverts with the theme instead of vanishing into a light card.
+// inverts with the theme instead of vanishing into a light page.
 const Compass = ({ degree = 0 }) => (
-  <svg viewBox="0 0 100 100" className="h-24 w-24 shrink-0 text-ink">
-    <circle cx="50" cy="50" r="46" fill="none" stroke="currentColor" strokeOpacity="0.14" strokeWidth="2" />
-    <circle cx="50" cy="50" r="38" fill="none" stroke="currentColor" strokeOpacity="0.08" strokeWidth="1" />
+  <svg viewBox="0 0 100 100" className="h-20 w-20 shrink-0 text-ink" aria-hidden="true">
+    <circle cx="50" cy="50" r="46" fill="none" stroke="currentColor" strokeOpacity="0.14" strokeWidth="1.5" />
+    {Array.from({ length: 36 }).map((_, i) => (
+      <line
+        key={i}
+        x1="50"
+        y1="6"
+        x2="50"
+        y2={i % 9 === 0 ? 13 : 10}
+        stroke="currentColor"
+        strokeOpacity={i % 9 === 0 ? 0.5 : 0.18}
+        strokeWidth="1"
+        transform={`rotate(${i * 10} 50 50)`}
+      />
+    ))}
     {[
-      ['N', 50, 16],
-      ['E', 86, 54],
-      ['S', 50, 90],
-      ['W', 14, 54],
+      ['N', 50, 23],
+      ['E', 78, 51],
+      ['S', 50, 79],
+      ['W', 22, 51],
     ].map(([l, x, y]) => (
-      <text
-        key={l}
-        x={x}
-        y={y}
-        textAnchor="middle"
-        dominantBaseline="middle"
-        fontSize="10"
-        fill="currentColor"
-        fillOpacity="0.5"
-        fontWeight="600"
-      >
+      <text key={l} x={x} y={y} textAnchor="middle" dominantBaseline="middle" fontSize="9" fill="currentColor" fillOpacity="0.45" fontWeight="600">
         {l}
       </text>
     ))}
-    {/* Needle points in the wind's compass direction */}
+    {/* The needle points the way the wind is blowing FROM. */}
     <g transform={`rotate(${degree} 50 50)`}>
-      <polygon points="50,24 44,52 56,52" fill="#f87171" />
-      <polygon points="50,76 44,52 56,52" fill="currentColor" fillOpacity="0.55" />
+      <line x1="50" y1="64" x2="50" y2="30" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <polygon points="50,24 45,34 55,34" fill="currentColor" />
     </g>
-    <circle cx="50" cy="52" r="3" fill="currentColor" />
+    <circle cx="50" cy="50" r="2.5" fill="currentColor" />
   </svg>
 );
 
-const WindMetric = ({ value, unit, label }) => (
-  <div className="flex items-baseline gap-1.5">
-    <span className="text-2xl font-bold text-ink">{value}</span>
-    <span className="text-xs text-ink/55">{unit}</span>
-    <span className="ml-1 text-sm text-ink/70">{label}</span>
-  </div>
-);
-
-const WindCard = ({ weather }) => (
-  <div className="flex items-center justify-between gap-4 rounded-3xl glass p-5">
-    <div className="flex flex-col">
-      <div className="flex items-center gap-2 text-ink/60">
-        <Wind size={16} />
-        <span className="text-xs font-semibold uppercase tracking-widest">Wind</span>
+const WindCard = ({ weather }) => {
+  const gust = Math.round(weather.gust ?? weather.wind);
+  return (
+    <Cell icon={Wind} label="Wind" note={`Gusts up to ${gust} km/h, from the ${weather.windDir}.`}>
+      <div className="flex items-center justify-between gap-4">
+        <Value value={Math.round(weather.wind)} unit="km/h" />
+        <Compass degree={weather.windDegree ?? 0} />
       </div>
-
-      <div className="mt-4 space-y-2">
-        <WindMetric value={Math.round(weather.wind)} unit="km/h" label="Wind" />
-        <div className="h-px w-32 bg-ink/10" />
-        <WindMetric value={Math.round(weather.gust ?? weather.wind)} unit="km/h" label="Gusts" />
-      </div>
-
-      <div className="mt-3 text-xs text-ink/50">From the {weather.windDir}</div>
-    </div>
-
-    <Compass degree={weather.windDegree ?? 0} />
-  </div>
-);
+    </Cell>
+  );
+};
 
 export default WindCard;

@@ -1,42 +1,71 @@
 import React from 'react';
-import { CalendarDays } from 'lucide-react';
+import { Umbrella } from 'lucide-react';
 import { getWeatherIcon } from '../utils/WeatherIcons';
 
+/*
+ * The outlook as a ruled table. Each day's low-to-high bar is placed on the
+ * shared scale of all days shown, so warmer and cooler days read at a glance.
+ */
 const ForecastCard = ({ forecast }) => {
   const today = new Date().toDateString();
+  const lo = Math.min(...forecast.map((d) => d.low));
+  const hi = Math.max(...forecast.map((d) => d.high));
+  const span = Math.max(1, hi - lo);
 
   return (
-    <div className="rounded-3xl glass p-5">
-      <div className="mb-4 flex items-center gap-2 border-b border-ink/10 pb-3">
-        <CalendarDays size={16} className="text-ink/60" />
-        <h3 className="text-xs font-semibold uppercase tracking-widest text-ink/70">
-          {forecast.length}-Day Forecast
-        </h3>
-      </div>
-
-      <div className="grid gap-3 sm:grid-cols-3">
-        {forecast.map((day, idx) => {
-          const isToday = day.date.toDateString() === today;
-          return (
-            <div
-              key={idx}
-              className={`flex flex-col items-center gap-2 rounded-2xl px-3 py-4 text-center transition-colors ${
-                isToday ? 'glass border-ink/20' : 'glass-soft glass-hover'
-              }`}
-            >
-              <span className="text-sm font-semibold text-ink">
-                {isToday ? 'Today' : day.date.toLocaleDateString('en-US', { weekday: 'short' })}
-              </span>
-              <span className="text-[11px] text-ink/50">
-                {day.date.toLocaleDateString('en-US', { day: '2-digit', month: '2-digit' })}
-              </span>
-              <span className="mt-1 text-2xl font-bold text-ink">{day.high}°</span>
-              <span className="text-xs text-ink/55">{day.low}°</span>
-              <div className="mt-1">{getWeatherIcon(day.weather, 30)}</div>
+    <div className="divide-y divide-ink/[0.08] border-y border-ink/[0.08]">
+      {forecast.map((day, idx) => {
+        const isToday = day.date.toDateString() === today;
+        const left = ((day.low - lo) / span) * 100;
+        const width = Math.max(4, ((day.high - day.low) / span) * 100);
+        return (
+          <div
+            key={idx}
+            className="grid grid-cols-[4.5rem_minmax(0,1fr)_minmax(7.5rem,10rem)] items-center gap-4 py-5 sm:grid-cols-[8rem_minmax(0,1fr)_4.5rem_minmax(12rem,18rem)] sm:gap-6"
+          >
+            <div>
+              <div className="text-base font-semibold text-ink">
+                {isToday ? (
+                  'Today'
+                ) : (
+                  <>
+                    <span className="sm:hidden">{day.date.toLocaleDateString('en-US', { weekday: 'short' })}</span>
+                    <span className="hidden sm:inline">{day.date.toLocaleDateString('en-US', { weekday: 'long' })}</span>
+                  </>
+                )}
+              </div>
+              <div className="text-xs text-ink/40">
+                {day.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+              </div>
             </div>
-          );
-        })}
-      </div>
+
+            <div className="flex min-w-0 items-center gap-3">
+              <span className="shrink-0">{getWeatherIcon(day.weather, 24)}</span>
+              <span className="truncate text-sm text-ink/65">{day.weather}</span>
+            </div>
+
+            <div className="hidden items-center gap-1.5 text-sm text-ink/50 sm:flex" title="Chance of rain">
+              <Umbrella size={13} />
+              <span className="tabular">{day.chanceOfRain}%</span>
+            </div>
+
+            <div className="tabular flex items-center gap-3 text-sm">
+              <span className="w-8 text-right text-ink/45">{day.low}°</span>
+              <span className="relative h-1.5 flex-1 rounded-full bg-ink/[0.08]">
+                <span
+                  className="absolute inset-y-0 rounded-full"
+                  style={{
+                    left: `${Math.min(left, 100 - width)}%`,
+                    width: `${width}%`,
+                    background: 'linear-gradient(90deg, rgb(var(--lilac)), rgb(var(--butter)))',
+                  }}
+                />
+              </span>
+              <span className="w-8 font-semibold text-ink">{day.high}°</span>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 };

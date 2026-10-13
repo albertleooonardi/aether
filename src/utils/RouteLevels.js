@@ -56,16 +56,65 @@
 // panels (350 is 2.99 on white; 550 is ~2.7 on dark), and 450 is `dry.stroke`, so
 // the ramp has only two usable non-stroke steps for three levels. `light.ink` is
 // the 450/500 midpoint, keeping the same hue and the dry → light → wet order.
+// ── GREEN → RED (current scheme) ────────────────────────────────────────────
+// Requested design: a road is coloured by its chance of rain, green at 0% through
+// lime, yellow and orange to red at 100%. The blue-ramp notes above are history.
+// Red-green alone is hard for ~8% of men to separate, so the ramp also moves in
+// lightness, every tooltip and badge states the % in words, and "no data" keeps
+// its dashed line.
+//
+// Strokes are tuned per basemap (contrast vs land, measured): dark basemap
+// (~#2a2a2a) green 8.2 · lime 9.5 · yellow 9.4 · orange 6.3 · red 3.8; light
+// basemap (#efefef) green 2.9 · lime 2.7 · yellow 2.6 · orange 3.1 · red 4.2.
+// `ink` (badge text on the panel) clears 3:1 on white AND on the dark panel
+// #171a1f: dry #15803d 5.0/3.5 · light #d97706 3.2/5.5 · wet #e11d48 4.7/3.7, and
+// stays disjoint from every stroke (asserted in RouteLevels.test.js).
 export const LEVEL = {
-  dry: { stroke: { dark: '#2a78d6', light: '#2a78d6' }, ink: '#3987e5', label: 'Dry' },
-  light: { stroke: { dark: '#6da7ec', light: '#1c5cab' }, ink: '#2871cb', label: 'Light rain' },
-  wet: { stroke: { dark: '#b7d3f6', light: '#0d366b' }, ink: '#256abf', label: 'Rain' },
-  // Warm neutral, deliberately off the blue ramp so "no data" cannot be misread as
-  // a rain level — and off the cool slate used for unselected alternative routes,
-  // which it used to share a hex with. `dashed` is the secondary encoding: absence
-  // of data is signalled by the broken line too, never by colour alone.
-  unknown: { stroke: { dark: '#a39c8b', light: '#a39c8b' }, ink: '#8a8578', label: 'No data', dashed: true },
+  dry: { stroke: { dark: '#4ade80', light: '#16a34a' }, ink: '#15803d', label: 'Dry' },
+  light: { stroke: { dark: '#facc15', light: '#ca8a04' }, ink: '#d97706', label: 'Light rain' },
+  wet: { stroke: { dark: '#ef4444', light: '#dc2626' }, ink: '#e11d48', label: 'Rain' },
+  // Warm neutral, off the green→red ramp so "no data" cannot be misread as a
+  // rain level. `dashed` is the secondary encoding: absence of data is signalled
+  // by the broken line too, never by colour alone.
+  unknown: { stroke: { dark: '#a39c8b', light: '#7a7468' }, ink: '#8a8578', label: 'No data', dashed: true },
 };
+
+// Continuous ramp for a chance of rain, 0–100.
+const RAMP = {
+  dark: ['#4ade80', '#a3e635', '#facc15', '#fb923c', '#ef4444'],
+  light: ['#16a34a', '#65a30d', '#ca8a04', '#ea580c', '#dc2626'],
+};
+
+const hexToRgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+const rgbToHex = (rgb) => `#${rgb.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('')}`;
+
+export const rainColor = (chance, theme = 'dark') => {
+  const stops = RAMP[theme] || RAMP.dark;
+  const t = Math.max(0, Math.min(100, Number(chance) || 0)) / 100;
+  const pos = t * (stops.length - 1);
+  const i = Math.min(Math.floor(pos), stops.length - 2);
+  const f = pos - i;
+  const [a, b] = [hexToRgb(stops[i]), hexToRgb(stops[i + 1])];
+  return rgbToHex(a.map((v, k) => v + (b[k] - v) * f));
+};
+
+// CSS gradient of the whole ramp, for legends.
+export const rainGradient = (theme = 'dark') => `linear-gradient(90deg, ${(RAMP[theme] || RAMP.dark).join(', ')})`;
+
+// The chance a segment is painted at. Mostly the forecast chance, but a stretch
+// classed as rain because of the AMOUNT expected (or rain falling right now) is
+// never shown greener than its level: 'light' paints at least 35%, 'wet' 75%.
+export const segmentChance = (s) => {
+  const c = typeof s.chance === 'number' ? s.chance : s.level === 'wet' ? 75 : s.level === 'light' ? 35 : 0;
+  if (s.level === 'wet') return Math.max(c, 75);
+  if (s.level === 'light') return Math.max(c, 35);
+  return c;
+};
+
+// The colour a drawn segment gets: the ramp by chance, or the dashed neutral
+// when there is no forecast for it.
+export const segmentStroke = (s, theme = 'dark') =>
+  s.level === 'unknown' ? strokeOf(LEVEL.unknown, theme) : rainColor(segmentChance(s), theme);
 
 // The stroke for a level on the given basemap theme ('dark' | 'light').
 export const strokeOf = (level, theme) => (level || LEVEL.unknown).stroke[theme] || (level || LEVEL.unknown).stroke.dark;
@@ -80,3 +129,69 @@ export const segmentsOf = (route) =>
   route.rain.segments?.length
     ? route.rain.segments
     : [{ from: 0, to: route.coordinates.length - 1, level: route.rain.level }];
+
+/* ---------------- where the chance of rain changes ---------------- */
+
+const kmBetween = (a, b) => {
+  const rad = Math.PI / 180;
+  const dLat = (b[0] - a[0]) * rad;
+  const dLon = (b[1] - a[1]) * rad;
+  const h = Math.sin(dLat / 2) ** 2 + Math.sin(dLon / 2) ** 2 * Math.cos(a[0] * rad) * Math.cos(b[0] * rad);
+  return 2 * 6371 * Math.asin(Math.sqrt(h));
+};
+
+/*
+ * Points along a route where the chance of rain changes, for the markers drawn
+ * on the line. The first entry is the start of the trip (`start: true`) so the
+ * opening stretch has a value too.
+ *
+ * Two filters keep the line readable:
+ *  - a change smaller than `minDelta` points is not a change worth a marker;
+ *  - a change closer than 1/(maxMarks+1) of the route to the previous marker is
+ *    held back, and lands at the next stretch that is far enough along (the
+ *    comparison stays against the last value SHOWN, so it is never lost).
+ * Stretches without a forecast are skipped: their dashed line already says so.
+ */
+export const rainBreakpoints = (route, { minDelta = 5, maxMarks = 10 } = {}) => {
+  const coords = route?.coordinates || [];
+  if (coords.length < 2) return [];
+  const segs = segmentsOf(route).filter((s) => s.level !== 'unknown' && coords[s.from]);
+  if (!segs.length) return [];
+
+  const cum = [0];
+  for (let i = 1; i < coords.length; i++) cum[i] = cum[i - 1] + kmBetween(coords[i - 1], coords[i]);
+  const minGap = (cum[cum.length - 1] || 0) / (maxMarks + 1);
+
+  const first = segs[0];
+  let shown = Math.round(segmentChance(first));
+  let lastKm = cum[first.from] || 0;
+  const marks = [
+    { start: true, lat: coords[first.from][0], lon: coords[first.from][1], chance: shown, prev: null, at: first.at, km: lastKm },
+  ];
+
+  for (let k = 1; k < segs.length && marks.length <= maxMarks; k++) {
+    const s = segs[k];
+    const chance = Math.round(segmentChance(s));
+    if (Math.abs(chance - shown) < minDelta) continue;
+    const km = cum[s.from] || 0;
+    if (km - lastKm < minGap) continue;
+    marks.push({ lat: coords[s.from][0], lon: coords[s.from][1], chance, prev: shown, at: s.at, km });
+    shown = chance;
+    lastKm = km;
+  }
+  return marks;
+};
+
+// Marker HTML for one breakpoint: a delimiter dot on the line in the new colour,
+// and a chip beside it with the new chance and which way it moved.
+export const breakpointHtml = (m, theme = 'dark') => {
+  const color = rainColor(m.chance, theme);
+  const arrow = m.start ? '' : m.chance > m.prev ? '↑ ' : '↓ ';
+  const label = m.start ? `${m.chance}%` : `${arrow}${m.chance}%`;
+  return (
+    `<div class="rain-mark${m.start ? ' rain-mark--start' : ''}">` +
+    `<span class="rain-mark__dot" style="background:${color}"></span>` +
+    `<span class="rain-mark__chip"><i style="background:${color}"></i>${label}</span>` +
+    '</div>'
+  );
+};

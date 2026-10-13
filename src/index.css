@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,100..900;1,100..900&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,300..800;1,300..800&family=Instrument+Serif:ital@0;1&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -32,6 +32,12 @@
   --soft: rgba(67, 77, 92, 0.35);
   --soft-line: rgba(111, 127, 150, 0.16);
 
+  /* Editorial accents, used sparingly: eyebrow labels, the temperature range
+     bar, the radar timeline. Everything else stays in the grey palette. */
+  --lilac: 185 178 245;
+  --butter: 239 227 160;
+  --hairline: 140 153 172; /* Cadet Gray, always used at low alpha */
+
   /* Weather iconography (see WeatherIcons.jsx): pale tints glow on near-black. */
   --wx-storm: #ddd6fe;
   --wx-snow: #e0f2fe;
@@ -62,6 +68,10 @@
   --line-hover: rgba(100, 116, 139, 0.35);
   --soft: rgba(100, 116, 139, 0.08);
   --soft-line: rgba(100, 116, 139, 0.14);
+
+  --lilac: 91 79 196;
+  --butter: 138 106 0;
+  --hairline: 88 102 122;
 
   /* The same icons, saturated so they hold their weight on a white card. */
   --wx-storm: #7c3aed;
@@ -125,18 +135,95 @@ html,
 body {
   margin: 0;
   padding: 0;
-  font-family: 'Montserrat', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  font-feature-settings: 'ss01', 'cv11';
   background: rgb(var(--page));
   color: rgb(var(--ink));
   transition: background-color 0.3s ease, color 0.3s ease;
 }
 
+@layer components {
+  /* Small uppercase label that sits above a headline or a section. */
+  .eyebrow {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    line-height: 1.4;
+  }
+
+  /* Tight display type for headlines and large numerals. */
+  .display {
+    font-weight: 500;
+    letter-spacing: -0.045em;
+    line-height: 0.98;
+    font-feature-settings: 'tnum' 0, 'ss01';
+  }
+
+  /* The serif italic accent word inside a headline. */
+  .accent-serif {
+    font-family: 'Instrument Serif', ui-serif, Georgia, serif;
+    font-style: italic;
+    font-weight: 400;
+    letter-spacing: -0.01em;
+  }
+
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Floating overlay: the nav pill and every panel on the map. */
+  .panel-float {
+    background: rgb(var(--panel) / 0.88);
+    border: 1px solid rgb(var(--hairline) / 0.16);
+    box-shadow: var(--shadow-pop);
+    -webkit-backdrop-filter: blur(18px) saturate(1.2);
+    backdrop-filter: blur(18px) saturate(1.2);
+  }
+
+  /* The inverted pill call-to-action from the nav. */
+  .btn-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    border-radius: 9999px;
+    background: rgb(var(--accent));
+    color: rgb(var(--accent-fg));
+    font-weight: 600;
+    transition: transform 0.2s ease, opacity 0.2s ease;
+  }
+  .btn-pill:hover {
+    opacity: 0.92;
+  }
+  .btn-pill:active {
+    transform: scale(0.97);
+  }
+
+  /* Square icon button used for map controls. */
+  .map-btn {
+    display: flex;
+    height: 2.5rem;
+    width: 2.5rem;
+    align-items: center;
+    justify-content: center;
+    color: rgb(var(--ink) / 0.7);
+    transition: background-color 0.15s ease, color 0.15s ease;
+  }
+  .map-btn:hover {
+    background: rgb(var(--ink) / 0.07);
+    color: rgb(var(--ink));
+  }
+  .map-btn[aria-pressed='true'] {
+    color: rgb(var(--ink));
+    background: rgb(var(--ink) / 0.1);
+  }
+}
+
 @layer utilities {
-  /* Card surface — Squid Ink with a Marengo/Slate hairline border */
+  /* Card surface. Quieter than before: a hairline and a faint lift. */
   .glass {
-    background: rgb(var(--surface));
-    border: 1px solid rgb(var(--line) / 0.22);
-    box-shadow: var(--shadow-card);
+    background: rgb(var(--surface) / 0.55);
+    border: 1px solid rgb(var(--hairline) / 0.16);
   }
 
   /* Nested / inner surface */
@@ -145,19 +232,11 @@ body {
     border: 1px solid var(--soft-line);
   }
 
-  .glass-hover {
-    transition:
-      transform 0.4s cubic-bezier(0.22, 1, 0.36, 1),
-      background 0.4s ease,
-      border-color 0.4s ease,
-      box-shadow 0.4s ease;
+  .border-hairline {
+    border-color: rgb(var(--hairline) / 0.18);
   }
-
-  .glass-hover:hover {
-    transform: translateY(-5px);
-    background: var(--surface-hover);
-    border-color: var(--line-hover);
-    box-shadow: var(--shadow-pop);
+  .bg-hairline {
+    background-color: rgb(var(--hairline) / 0.18);
   }
 
   .text-glow {
@@ -184,6 +263,49 @@ body {
     -ms-overflow-style: none;
     scrollbar-width: none;
   }
+
+  /* Thin scrollbar for menus and panels */
+  .thin-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(var(--ink) / 0.18) transparent;
+  }
+}
+
+/* ---- Radar timeline scrubber ---- */
+.radar-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 18px;
+  background: transparent;
+  cursor: pointer;
+}
+.radar-range::-webkit-slider-runnable-track {
+  height: 2px;
+  border-radius: 2px;
+  background: rgb(var(--ink) / 0.18);
+}
+.radar-range::-moz-range-track {
+  height: 2px;
+  border-radius: 2px;
+  background: rgb(var(--ink) / 0.18);
+}
+.radar-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  height: 14px;
+  width: 14px;
+  margin-top: -6px;
+  border-radius: 9999px;
+  background: rgb(var(--ink));
+  border: 3px solid rgb(var(--panel));
+  box-shadow: 0 0 0 1px rgb(var(--ink) / 0.25);
+}
+.radar-range::-moz-range-thumb {
+  height: 10px;
+  width: 10px;
+  border-radius: 9999px;
+  background: rgb(var(--ink));
+  border: 3px solid rgb(var(--panel));
 }
 
 /* ---- Leaflet map ---- */
@@ -203,29 +325,131 @@ body {
 .leaflet-control-attribution {
   background: rgb(var(--panel) / 0.7) !important;
   color: rgb(var(--ink) / 0.45) !important;
+  border-radius: 8px 8px 0 0;
+  font-size: 10px;
 }
 .leaflet-control-attribution a {
   color: rgb(var(--ink) / 0.7) !important;
+}
+.leaflet-control-scale-line {
+  background: rgb(var(--panel) / 0.7);
+  color: rgb(var(--ink) / 0.65);
+  border-color: rgb(var(--ink) / 0.45);
+  font-size: 10px;
 }
 .leaflet-tooltip {
   background: rgb(var(--panel));
   border: 1px solid rgb(var(--ink) / 0.12);
   color: rgb(var(--ink));
   box-shadow: var(--shadow-card);
+  border-radius: 10px;
+  font-size: 11px;
 }
 .leaflet-tooltip-top::before {
   border-top-color: rgb(var(--panel));
+}
+
+/* The street basemap is one colourful tile set; recolour it to the app's grey
+ * palette per theme. Only the basemap layer is filtered, never the radar,
+ * routes or chips drawn above it. */
+[data-basemap='street'] .basemap-tiles {
+  filter: grayscale(1) contrast(0.92) brightness(1.02);
+}
+:root[data-theme='dark'] [data-basemap='street'] .basemap-tiles,
+:root:not([data-theme]) [data-basemap='street'] .basemap-tiles {
+  filter: grayscale(1) invert(1) brightness(0.82) contrast(0.88);
+}
+
+/* On phones the radar timeline owns the bottom edge. */
+@media (max-width: 639px) {
+  .leaflet-control-scale {
+    display: none;
+  }
+}
+
+/* Where a route's chance of rain changes: a ringed dot on the line, and a
+ * small chip beside it with the new percentage. */
+.rain-mark {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+.rain-mark__dot {
+  position: absolute;
+  left: -7px;
+  top: -7px;
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  border: 3px solid rgb(var(--panel));
+  box-shadow: 0 0 0 1.5px rgb(var(--ink) / 0.55), 0 2px 6px rgba(0, 0, 0, 0.35);
+}
+.rain-mark--start .rain-mark__dot {
+  display: none; /* the origin pin already marks the start */
+}
+.rain-mark__chip {
+  position: absolute;
+  left: 11px;
+  top: -11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  padding: 2px 8px 2px 6px;
+  border-radius: 9999px;
+  background: rgb(var(--panel) / 0.92);
+  border: 1px solid rgb(var(--ink) / 0.12);
+  color: rgb(var(--ink));
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 18px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+.rain-mark--start .rain-mark__chip {
+  left: 13px;
+}
+.rain-mark__chip i {
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+}
+
+/* City temperature chips drawn over the basemap. */
+.city-chip-icon {
+  background: none;
+  border: none;
 }
 
 /* The animated weather backdrop (rain, snow, stars) draws its particles in `ink`
  * so they flip with the theme. Against a bright page those dark specks carry far
  * more weight than pale ones do on black, so the whole layer is dialled back —
  * it should read as atmosphere behind the cards, never as content. */
+.wx-fx {
+  opacity: 0.55;
+}
 :root[data-theme='light'] .wx-fx {
-  opacity: 0.35;
+  opacity: 0.25;
 }
 
-/* Pulsing "you are here" dot */
+/* Device location on the map: a blue dot with a soft breathing halo. */
+.me-dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 9999px;
+  background: #4c8dff;
+  border: 3px solid #fff;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.35), 0 0 0 0 rgba(76, 141, 255, 0.45);
+  animation: mepulse 2.4s ease-out infinite;
+  cursor: pointer;
+}
+@keyframes mepulse {
+  0% { box-shadow: 0 1px 6px rgba(0, 0, 0, 0.35), 0 0 0 0 rgba(76, 141, 255, 0.45); }
+  70% { box-shadow: 0 1px 6px rgba(0, 0, 0, 0.35), 0 0 0 14px rgba(76, 141, 255, 0); }
+  100% { box-shadow: 0 1px 6px rgba(0, 0, 0, 0.35), 0 0 0 0 rgba(76, 141, 255, 0); }
+}
+
+/* Pulsing pin for a selected point */
 .rc-pulse {
   width: 14px;
   height: 14px;

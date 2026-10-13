@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { MessageCircle, X, Send, Bell, Sparkles, RotateCw, Trash2 } from 'lucide-react';
+import { X, ArrowUp, Bell, RotateCw, SquarePen, Sparkles, Info } from 'lucide-react';
+import Logo from '../Logo';
 import { parseReminder, answer, formatClock, routeSummary } from '../../chat/assistant';
 import { parseNavigation, parseWeatherIn, parseMapsUrl, parseFollowUp } from '../../chat/intents';
 import { fetchWeatherByCity } from '../../services/WeatherService';
@@ -123,13 +124,14 @@ const toCard = (data) => {
 };
 
 const SUGGESTIONS = [
-  'Weather in Surabaya',
-  'Any rain when I’m going to Grand Indonesia?',
-  'Route from my place to Grand Indonesia — will it rain?',
-  'What should I wear today?',
-  'Is it a good evening for a run?',
-  'Remind me to bring an umbrella at 5pm',
+  { title: 'Weather in Surabaya', note: 'Conditions anywhere' },
+  { title: 'Route from my place to Grand Indonesia — will it rain?', note: 'Map the driest way' },
+  { title: 'What should I wear today?', note: 'Advice for right now' },
+  { title: 'Remind me to bring an umbrella at 5pm', note: 'A local reminder' },
 ];
+
+// Long URLs and place names must wrap inside the panel instead of pushing it wider.
+const WRAP = 'break-words [overflow-wrap:anywhere]';
 
 // Backend liveness, surfaced in the header so you can tell at a glance whether
 // the chatbot is actually running (the honest answer to "is it up on Vercel?").
@@ -166,6 +168,7 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
   const epoch = useRef(0);
   const timers = useRef({});
   const logEnd = useRef(null);
+  const composer = useRef(null);
   const weatherRef = useRef(weather);
   weatherRef.current = weather;
   const hourlyRef = useRef(hourly);
@@ -672,6 +675,31 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
 
   const activeCount = reminders.filter((r) => r.dueEpoch > Date.now()).length;
   const meta = STATUS[status] || STATUS.checking;
+  // A fresh thread shows a welcome screen instead of the intro message.
+  const fresh = messages.length <= 1 && (!messages[0] || messages[0].id === 'intro');
+
+  // Enter sends, Shift+Enter adds a line — the Claude/ChatGPT convention.
+  const onComposerKey = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      e.currentTarget.form?.requestSubmit();
+    }
+  };
+
+  // Grow the composer with its text, up to five lines, then scroll inside it.
+  useEffect(() => {
+    const el = composer.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
+  }, [input, open]);
+
+  useEffect(() => {
+    if (open) setTimeout(() => composer.current?.focus(), 50);
+  }, [open]);
+
+  const iconBtn =
+    'flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-ink/50 transition-colors hover:bg-ink/[0.07] hover:text-ink';
 
   return (
     <>
@@ -682,191 +710,197 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
         // header ✕), so the floating toggle hides; from sm up it stays.
         className={`${
           open ? 'hidden sm:flex' : 'flex'
-        } fixed bottom-5 right-5 z-50 h-14 w-14 items-center justify-center rounded-full bg-accent text-accentFg shadow-2xl transition-transform hover:scale-105 active:scale-95 mb-[env(safe-area-inset-bottom)]`}
+        } fixed bottom-5 right-5 z-50 mb-[env(safe-area-inset-bottom)] h-12 w-12 items-center justify-center rounded-full bg-accent text-accentFg shadow-xl transition-transform hover:scale-105 active:scale-95`}
       >
-        {open ? <X size={24} /> : <MessageCircle size={24} />}
+        {open ? <X size={20} /> : <Sparkles size={19} />}
         {/* Liveness dot, so the backend's state is visible without opening the
             chat — the whole point of the status work. */}
         {!open && (
           <span
             title={`Assistant: ${meta.label}`}
-            className={`absolute -bottom-0.5 -right-0.5 h-4 w-4 rounded-full border-2 border-page ${meta.dot} ${
+            className={`absolute bottom-0 right-0 h-3.5 w-3.5 rounded-full border-2 border-page ${meta.dot} ${
               meta.pulse ? 'animate-pulse' : ''
             }`}
           />
         )}
         {!open && activeCount > 0 && (
-          <span className="absolute -right-0.5 -top-0.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-sky-500 px-1 text-[11px] font-bold text-white">
+          <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-sky-500 px-1 text-[10px] font-bold text-white">
             {activeCount}
           </span>
         )}
       </button>
 
       {open && (
-        // Phone: full-screen sheet (dvh tracks the on-screen keyboard). sm+: the
-        // familiar floating panel.
-        <div className="fixed inset-0 z-50 flex h-dvh w-full flex-col overflow-hidden bg-panel/90 shadow-2xl backdrop-blur-2xl animate-fade-in-up sm:inset-auto sm:bottom-24 sm:right-5 sm:h-[min(660px,82vh)] sm:w-[min(440px,calc(100vw-2rem))] sm:rounded-3xl sm:border sm:border-ink/10 sm:bg-panel/85">
+        // Phone: full-screen sheet (dvh tracks the on-screen keyboard). sm+: a
+        // compact floating panel that always fits the viewport.
+        <div
+          role="dialog"
+          aria-label="AetherAI assistant"
+          className="panel-float fixed inset-0 z-50 flex h-dvh w-full flex-col overflow-hidden animate-fade-in-up sm:inset-auto sm:bottom-20 sm:right-5 sm:h-[min(600px,calc(100dvh-7rem))] sm:w-[min(400px,calc(100vw-2.5rem))] sm:rounded-[24px]"
+        >
           {/* Header */}
-          <div className="flex items-center gap-3 border-b border-ink/10 px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top))] sm:pt-3">
-            <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#434D5C]">
-              <Sparkles size={16} className="text-[#8C99AC]" />
-              {/* Status ring on the avatar mirrors the header label. */}
-              <span
-                className={`absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-panel ${meta.dot} ${
-                  meta.pulse ? 'animate-pulse' : ''
-                }`}
-              />
-            </span>
-            <div className="min-w-0 flex-1">
-              <div className="text-sm font-semibold leading-tight text-ink">AetherAI</div>
-              {/* Live status — click to re-probe (useful when it's Offline). */}
-              <button
-                onClick={probe}
-                title="Check connection"
-                className="mt-0.5 flex items-center gap-1.5 text-[11px] transition-opacity hover:opacity-80"
-              >
-                <span className={`h-1.5 w-1.5 rounded-full ${meta.dot} ${meta.pulse ? 'animate-pulse' : ''}`} />
-                <span className={`font-medium ${meta.tone}`}>{meta.label}</span>
-                {weather && <span className="truncate text-ink/40">· {weather.city} {weather.temp}°</span>}
-                {(status === 'offline' || status === 'basic') && <RotateCw size={10} className="text-ink/40" />}
+          <div className="flex h-12 shrink-0 items-center gap-2 border-b border-ink/[0.07] pl-4 pr-2 pt-[env(safe-area-inset-top)] sm:pt-0">
+            <Logo size={15} className="text-ink" />
+            <span className="text-sm font-semibold text-ink">AetherAI</span>
+            {/* Live status — click to re-probe (useful when it's Offline). */}
+            <button
+              onClick={probe}
+              title={`${meta.label} · check connection`}
+              className="flex min-w-0 items-center gap-1.5 rounded-full px-1.5 py-0.5 text-[11px] text-ink/45 transition hover:bg-ink/[0.06]"
+            >
+              <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${meta.dot} ${meta.pulse ? 'animate-pulse' : ''}`} />
+              <span className="truncate">
+                {status === 'online' && weather ? `${weather.city} ${weather.temp}°` : meta.label}
+              </span>
+              {(status === 'offline' || status === 'basic') && <RotateCw size={10} className="shrink-0" />}
+            </button>
+
+            <div className="ml-auto flex items-center">
+              {activeCount > 0 && (
+                <span
+                  title={`${activeCount} reminder${activeCount > 1 ? 's' : ''} set`}
+                  className="mr-1 flex items-center gap-1 rounded-full bg-ink/[0.07] px-2 py-0.5 text-[11px] text-ink/65"
+                >
+                  <Bell size={11} /> {activeCount}
+                </span>
+              )}
+              {/* The transcript persists to disk, so give a way to delete it. Deliberately NOT
+                  disabled while `busy`: a stalled turn would leave the only delete control dead. The
+                  epoch/turnEpoch guard in say() is what makes clearing mid-turn safe (a late reply is
+                  dropped), not a disabled attribute — don't re-add one. */}
+              <button onClick={clearConversation} aria-label="Clear chat" title="New chat" className={iconBtn}>
+                <SquarePen size={15} />
+              </button>
+              <button onClick={() => setOpen(false)} aria-label="Close assistant" title="Close" className={iconBtn}>
+                <X size={17} />
               </button>
             </div>
-            {activeCount > 0 && (
-              <span className="flex items-center gap-1 rounded-full bg-ink/10 px-2.5 py-1 text-[11px] text-ink/70">
-                <Bell size={12} /> {activeCount}
-              </span>
-            )}
-            {/* The transcript now persists to disk, so give a way to delete it. Deliberately NOT
-                disabled while `busy`: a stalled turn would leave the only delete control dead. The
-                epoch/turnEpoch guard in say() is what makes clearing mid-turn safe (a late reply is
-                dropped), not a disabled attribute — don't re-add one. */}
-            <button
-              onClick={clearConversation}
-              aria-label="Clear chat"
-              title="Clear chat"
-              className="flex h-8 w-8 items-center justify-center rounded-lg text-ink/55 transition-colors hover:bg-ink/10 hover:text-ink"
-            >
-              <Trash2 size={16} />
-            </button>
-            {/* On phones the sheet covers the floating toggle — close lives here. */}
-            <button
-              onClick={() => setOpen(false)}
-              aria-label="Close assistant"
-              className="flex h-8 w-8 items-center justify-center rounded-lg text-ink/55 transition-colors hover:bg-ink/10 hover:text-ink sm:hidden"
-            >
-              <X size={18} />
-            </button>
           </div>
 
           {/* When the LLM isn't available, say why and what to do — this is the
               thing that was impossible to diagnose on Vercel before. */}
           {STATUS_NOTE[status] && (
             <div
-              className={`border-b border-ink/10 px-4 py-2 text-[11px] leading-snug ${
-                status === 'offline' ? 'bg-rose-500/10 text-rose-500' : 'bg-amber-400/10 text-amber-500'
+              className={`flex shrink-0 items-start gap-2 px-4 py-2 text-[11px] leading-snug ${
+                status === 'offline' ? 'bg-rose-500/10 text-rose-400' : 'bg-amber-400/10 text-amber-500'
               }`}
             >
-              {STATUS_NOTE[status]}
+              <Info size={12} className="mt-px shrink-0" />
+              <span className={WRAP}>{STATUS_NOTE[status]}</span>
             </div>
           )}
 
           {/* Messages */}
-          <div className="flex-1 space-y-5 overflow-y-auto px-4 py-5">
-            {messages.map((m) =>
-              m.role === 'user' ? (
-                <div key={m.id} className="flex justify-end">
-                  <div className="max-w-[85%] whitespace-pre-line rounded-2xl bg-ink/[0.07] px-4 py-2.5 text-[14.5px] leading-relaxed text-ink">
-                    {m.text}
-                  </div>
-                </div>
-              ) : (
-                <div key={m.id} className="flex gap-3">
-                  <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#434D5C]">
-                    <Sparkles size={13} className="text-[#8C99AC]" />
-                  </span>
-                  <div className="min-w-0 max-w-[calc(100%-2.5rem)] flex-1 text-[14.5px] leading-relaxed text-ink/85">
-                    <RichText text={m.text} />
-                    {m.kind === 'weather' && <WeatherReplyCard data={m.data} />}
-                    {m.kind === 'route' && (
-                      <ChatRouteMap
-                        data={m.data}
-                        onOpenInMap={
-                          onOpenRoute
-                            ? (d) => {
-                                // Hand the already-computed route to the full map
-                                // page and get the chat sheet out of its way.
-                                onOpenRoute(d);
-                                setOpen(false);
-                              }
-                            : undefined
-                        }
-                      />
-                    )}
-                    {m.kind === 'choice' && <PlacePicker data={m.data} onPick={(c) => handlePick(m, c)} />}
-                  </div>
-                </div>
-              )
-            )}
-
-            {busy && (
-              <div className="flex gap-3">
-                <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#434D5C]">
-                  <Sparkles size={13} className="text-[#8C99AC]" />
-                </span>
-                <div className="flex items-center gap-1 py-2">
-                  {[0, 1, 2].map((i) => (
-                    <span
-                      key={i}
-                      className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink/40"
-                      style={{ animationDelay: `${i * 0.15}s` }}
-                    />
+          <div className="thin-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+            {fresh ? (
+              <div className="flex min-h-full flex-col justify-end px-4 pb-2 pt-8">
+                <p className="eyebrow !text-[10px] text-lilac">Your weather companion</p>
+                <h2 className="display mt-2 text-[1.7rem] !leading-[1.1] !tracking-[-0.03em] text-ink">
+                  How’s the <span className="accent-serif">sky</span> looking?
+                </h2>
+                <p className="mt-2 text-[13px] leading-relaxed text-ink/50">
+                  Ask about any place, a route, what to wear, or set a reminder.
+                </p>
+                <div className="mt-5 space-y-1">
+                  {SUGGESTIONS.map((q) => (
+                    <button
+                      key={q.title}
+                      onClick={() => {
+                        setInput(q.title);
+                        composer.current?.focus();
+                      }}
+                      className="group flex w-full items-center gap-3 rounded-xl border border-ink/[0.08] px-3 py-2 text-left transition hover:border-ink/20 hover:bg-ink/[0.04]"
+                    >
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[13px] text-ink/85">{q.title}</span>
+                        <span className="block text-[11px] text-ink/40">{q.note}</span>
+                      </span>
+                      <ArrowUp size={13} className="shrink-0 rotate-45 text-ink/30 transition group-hover:text-ink/70" />
+                    </button>
                   ))}
                 </div>
               </div>
+            ) : (
+              <div className="space-y-4 px-4 py-4">
+                {/* The intro is replaced by the welcome screen, so it isn't repeated
+                    at the top of a running thread. */}
+                {messages.filter((m) => m.id !== 'intro').map((m) =>
+                  m.role === 'user' ? (
+                    <div key={m.id} className="flex justify-end pl-10">
+                      <div
+                        className={`max-w-full whitespace-pre-line rounded-[18px] rounded-br-md bg-ink/[0.08] px-3.5 py-2 text-[14px] leading-relaxed text-ink ${WRAP}`}
+                      >
+                        {m.text}
+                      </div>
+                    </div>
+                  ) : (
+                    <div key={m.id} className={`min-w-0 text-[14px] leading-relaxed text-ink/85 ${WRAP}`}>
+                      {m.text && <RichText text={m.text} />}
+                      {m.kind === 'weather' && <WeatherReplyCard data={m.data} />}
+                      {m.kind === 'route' && (
+                        <ChatRouteMap
+                          data={m.data}
+                          onOpenInMap={
+                            onOpenRoute
+                              ? (d) => {
+                                  // Hand the already-computed route to the full map
+                                  // page and get the chat sheet out of its way.
+                                  onOpenRoute(d);
+                                  setOpen(false);
+                                }
+                              : undefined
+                          }
+                        />
+                      )}
+                      {m.kind === 'choice' && <PlacePicker data={m.data} onPick={(c) => handlePick(m, c)} />}
+                    </div>
+                  )
+                )}
+
+                {busy && (
+                  <div className="flex items-center gap-1 py-1" aria-label="AetherAI is typing">
+                    {[0, 1, 2].map((i) => (
+                      <span
+                        key={i}
+                        className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink/40"
+                        style={{ animationDelay: `${i * 0.15}s` }}
+                      />
+                    ))}
+                  </div>
+                )}
+                <div ref={logEnd} />
+              </div>
             )}
-            <div ref={logEnd} />
           </div>
 
-          {/* Starter prompts — shown only before the conversation begins, the way
-              Claude offers suggestions on an empty thread, then gets out of the way. */}
-          {messages.length <= 1 && (
-            <div className="no-scrollbar flex gap-2 overflow-x-auto px-4 pb-2">
-              {SUGGESTIONS.map((q) => (
-                <button
-                  key={q}
-                  onClick={() => setInput(q)}
-                  className="shrink-0 rounded-full border border-ink/15 px-3 py-1.5 text-xs text-ink/70 transition-colors hover:border-ink/30 hover:bg-ink/5 hover:text-ink"
-                >
-                  {q}
-                </button>
-              ))}
-            </div>
-          )}
-
-          {/* Input */}
-          <form
-            onSubmit={handleSubmit}
-            className="p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pb-3"
-          >
-            <div className="flex items-end gap-2 rounded-[1.4rem] border border-ink/12 bg-ink/[0.04] p-1.5 pl-2 transition-colors focus-within:border-ink/25 focus-within:bg-ink/[0.06]">
-              <input
+          {/* Composer */}
+          <form onSubmit={handleSubmit} className="shrink-0 px-3 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-1">
+            <div className="flex items-end gap-2 rounded-[20px] border border-ink/[0.12] bg-ink/[0.04] py-1.5 pl-3.5 pr-1.5 transition-colors focus-within:border-ink/25">
+              <textarea
+                ref={composer}
+                rows={1}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                placeholder="Message AetherAI…"
+                onKeyDown={onComposerKey}
+                placeholder="Ask AetherAI"
+                aria-label="Message AetherAI"
                 disabled={busy}
                 // text-base on phones: anything under 16px makes iOS zoom the
                 // whole page every time the input is focused.
-                className="w-full bg-transparent px-2.5 py-2 text-base text-ink placeholder-ink/40 outline-none disabled:opacity-60 sm:text-sm"
+                className="thin-scroll max-h-[120px] min-w-0 flex-1 resize-none bg-transparent py-1.5 text-base leading-6 text-ink placeholder-ink/40 outline-none disabled:opacity-60 sm:text-sm"
               />
               <button
                 type="submit"
                 aria-label="Send"
                 disabled={busy || !input.trim()}
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent text-accentFg transition-transform active:scale-95 disabled:opacity-30"
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent text-accentFg transition active:scale-95 disabled:opacity-25"
               >
-                <Send size={15} />
+                <ArrowUp size={16} strokeWidth={2.4} />
               </button>
             </div>
+            <p className="py-1.5 text-center text-[10px] text-ink/35">
+              Forecasts can change. Check before you head out.
+            </p>
           </form>
         </div>
       )}

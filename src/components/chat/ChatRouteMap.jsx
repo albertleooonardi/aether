@@ -1,6 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { MapPin, Flag, Clock, Route as RouteIcon, Maximize2 } from 'lucide-react';
-import { LEVEL, ALT_ROUTE_COLOR, segmentsOf } from '../../utils/RouteLevels';
+import { MapPin, Flag, Maximize2 } from 'lucide-react';
+import {
+  LEVEL,
+  ALT_ROUTE_COLOR,
+  segmentsOf,
+  segmentStroke,
+  rainGradient,
+  rainBreakpoints,
+  breakpointHtml,
+} from '../../utils/RouteLevels';
 import { enableSmoothWheelZoom } from '../../utils/SmoothZoom';
 
 // RainViewer's free radar tiles only exist up to z7; above that it serves a
@@ -115,7 +123,9 @@ const ChatRouteMap = ({ data, onOpenInMap }) => {
     segmentsOf(sel).forEach((s) => {
       const lvl = LEVEL[s.level] || LEVEL.unknown;
       const line = L.polyline(sel.coordinates.slice(s.from, s.to + 1), {
-        color: lvl.stroke.dark, // this map always draws on the dark basemap
+        // Green at 0% chance of rain through to red at 100%. This map always
+        // draws on the dark basemap.
+        color: segmentStroke(s, 'dark'),
         // "No data" also breaks the line, so absence is never colour-alone.
         ...(lvl.dashed ? { dashArray: '7 9' } : {}),
         weight: 6,
@@ -130,6 +140,15 @@ const ChatRouteMap = ({ data, onOpenInMap }) => {
         const chance = typeof s.chance === 'number' ? ` · ${s.chance}% rain` : '';
         line.bindTooltip(`~${when}${chance}`, { sticky: true, direction: 'top' });
       }
+    });
+
+    // Where the chance of rain changes. The chat map is small, so fewer marks.
+    rainBreakpoints(sel, { maxMarks: 4, minDelta: 10 }).forEach((m) => {
+      L.marker([m.lat, m.lon], {
+        icon: L.divIcon({ className: '', html: breakpointHtml(m, 'dark'), iconSize: [0, 0] }),
+        keyboard: false,
+        interactive: false,
+      }).addTo(group);
     });
 
     const dot = (color) =>
@@ -149,7 +168,7 @@ const ChatRouteMap = ({ data, onOpenInMap }) => {
   const legend = [...new Set(segmentsOf(shown).map((s) => s.level))];
 
   return (
-    <div className="mt-2 overflow-hidden rounded-2xl border border-ink/10 bg-ink/5">
+    <div className="mt-2.5 overflow-hidden rounded-2xl border border-ink/[0.1]">
       {/* Endpoints */}
       <div className="flex items-center gap-2 px-3 py-2 text-xs text-ink/70">
         <MapPin size={13} className="shrink-0 text-sky-300" />
@@ -165,12 +184,12 @@ const ChatRouteMap = ({ data, onOpenInMap }) => {
           Top-right: zoomControl is off, so no Leaflet control lives there. z-[1000] clears Leaflet's
           panes (up to 700) and controls (800); the min-h/px keep a usable touch target. */}
       <div className="relative">
-        <div ref={el} className="h-56 w-full" />
+        <div ref={el} className="h-44 w-full" />
         {onOpenInMap && (
           <button
             onClick={() => onOpenInMap(data)}
             title="Open on the full map page"
-            className="absolute right-2 top-2 z-[1000] flex min-h-[32px] items-center gap-1 rounded-lg bg-ink/10 px-2.5 py-1 text-[10px] font-medium text-ink/70 backdrop-blur transition hover:bg-ink/20 hover:text-ink"
+            className="absolute right-2 top-2 z-[1000] flex min-h-[30px] items-center gap-1 rounded-full bg-panel/85 px-2.5 py-1 text-[10px] font-semibold text-ink/80 shadow backdrop-blur transition hover:bg-panel hover:text-ink"
           >
             <Maximize2 size={11} /> Open in map
           </button>
@@ -178,7 +197,7 @@ const ChatRouteMap = ({ data, onOpenInMap }) => {
       </div>
 
       {/* Route summary — tap a row to draw that alternative instead. */}
-      <div className="space-y-1.5 p-3">
+      <div className="space-y-1 p-2">
         {data.routes.map((r, i) => {
           const lv = LEVEL[r.rain.level] || LEVEL.dry;
           const isSelected = i === selected;
@@ -189,8 +208,8 @@ const ChatRouteMap = ({ data, onOpenInMap }) => {
               type="button"
               aria-pressed={isSelected}
               onClick={() => setSelected(i)}
-              className={`flex w-full items-center gap-2 rounded-xl px-2.5 py-1.5 text-left text-xs transition ${
-                isSelected ? 'bg-ink/10 text-ink' : 'text-ink/55 hover:bg-ink/5 hover:text-ink/80'
+              className={`flex w-full min-w-0 items-center gap-2 rounded-xl px-2 py-1.5 text-left text-xs transition ${
+                isSelected ? 'bg-ink/[0.08] text-ink' : 'text-ink/55 hover:bg-ink/[0.05] hover:text-ink/80'
               }`}
             >
               {/* Rule: anything that samples the drawn map line (this dot, the legend swatches) uses
@@ -199,45 +218,38 @@ const ChatRouteMap = ({ data, onOpenInMap }) => {
               <span className="inline-flex shrink-0 items-center rounded-full bg-slate-900/90 p-0.5 ring-1 ring-ink/15">
                 <span
                   className="h-2 w-2 rounded-full"
-                  style={{ background: isSelected ? lv.stroke.dark : ALT_ROUTE_COLOR }}
+                  style={{ background: isSelected ? segmentStroke({ level: r.rain.level, chance: r.rain.chance }, 'dark') : ALT_ROUTE_COLOR }}
                 />
               </span>
-              <RouteIcon size={12} className="shrink-0" />
-              <span className="flex-1 truncate">
-                {isBest ? 'Recommended' : `Option ${i + 1}`} · {r.distanceKm.toFixed(1)} km
+              <span className="min-w-0 flex-1 truncate">
+                {isBest ? 'Recommended' : `Option ${i + 1}`}
+                <span className="text-ink/40"> · {r.distanceKm.toFixed(1)} km</span>
               </span>
-              <Clock size={12} className="shrink-0 opacity-70" />
-              <span>{Math.round(r.durationMin)} min</span>
+              <span className="tabular shrink-0 font-semibold">{Math.round(r.durationMin)} min</span>
               <span
                 className="ml-1 shrink-0 rounded-full px-1.5 py-0.5 text-[10px]"
                 style={{ background: `${lv.ink}22`, color: lv.ink }}
               >
                 {lv.label}
+                {typeof r.rain.chance === 'number' && r.rain.level !== 'unknown' && ` · ${r.rain.chance}%`}
               </span>
             </button>
           );
         })}
 
-        {/* What the colours along the drawn line mean. */}
-        {legend.length > 1 && (
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-1 text-[10px] text-ink/45">
-            <span>Along the road:</span>
-            {legend.map((l) => (
-              <span key={l} className="flex items-center gap-1">
-                {/* Legend = a sample of the MAP line, so it uses `stroke` on a dark chip (the chip
-                    supplies the contrast the light panel can't). The per-route badge is panel text, so it
-                    uses `ink`. The two ramps run in opposite directions BY DESIGN: a dark basemap and a
-                    light panel want opposite things. Don't "fix" either toward the other (RouteLevels.js). */}
-                <span className="inline-flex items-center rounded-full bg-slate-900/90 px-1 py-0.5 ring-1 ring-ink/15">
-                  <span className="h-1.5 w-3 rounded-full" style={{ background: (LEVEL[l] || LEVEL.unknown).stroke.dark }} />
-                </span>
-                {(LEVEL[l] || LEVEL.unknown).label}
-              </span>
-            ))}
-          </div>
-        )}
+        {/* What the colours along the drawn line mean: one continuous ramp. */}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-1 pt-1 text-[10px] text-ink/45">
+          <span className="flex items-center gap-1.5">
+            <span>0%</span>
+            <span className="inline-flex items-center rounded-full bg-slate-900/90 px-1 py-0.5 ring-1 ring-ink/15">
+              <span className="inline-block h-1.5 w-14 rounded-full" style={{ background: rainGradient('dark') }} />
+            </span>
+            <span>100% chance of rain</span>
+          </span>
+          {legend.includes('unknown') && <span>Dashed: no forecast</span>}
+        </div>
 
-        <p className="pt-1 text-[11px] text-ink/45">
+        <p className="px-1 pt-1 text-[11px] leading-snug text-ink/45">
           {shown.rain.level === 'unknown'
             ? "Couldn't reach the weather service to check this route."
             : shown.rain.level === 'dry'

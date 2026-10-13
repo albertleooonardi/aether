@@ -459,8 +459,13 @@ function httpsPostJSON(hostname, reqPath, payload, headers) {
   });
 }
 
+// AbortSignal.timeout exists in every Node the server runs on, but not in the
+// jsdom test environment; there the request simply runs unbounded.
+const timeoutSignal = (ms) =>
+  typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(ms) : undefined;
+
 async function fetchJSON(url, headers, timeoutMs = 8000) {
-  const res = await fetch(url, { headers: headers || {}, signal: AbortSignal.timeout(timeoutMs) });
+  const res = await fetch(url, { headers: headers || {}, signal: timeoutSignal(timeoutMs) });
   const text = await res.text();
   let data = null;
   try {
@@ -699,6 +704,53 @@ async function viaNominatim(q, c) {
     });
 }
 
+/* ---------------- Google Places (optional) ---------------- */
+// With GOOGLE_MAPS_API_KEY set, place search runs on Google Places (New) Text
+// Search first: the same places, names and addresses people see in Google
+// Maps. It returns coordinates in one call, so a result is usable straight
+// away, with no second details lookup. Without a key, the OSM providers below
+// carry the search exactly as before. The key stays on the server.
+const GOOGLE_TEXT_SEARCH = 'https://places.googleapis.com/v1/places:searchText';
+const GOOGLE_FIELDS = 'places.displayName,places.formattedAddress,places.shortFormattedAddress,places.location';
+const GOOGLE_BIAS_RADIUS_M = 50000; // the API's maximum for a circle bias
+
+const googleKey = () => process.env.GOOGLE_MAPS_API_KEY || process.env.GOOGLE_PLACES_API_KEY || '';
+
+// Google's address usually repeats the name first ("Grand Indonesia, Jl. ...");
+// only add what the name doesn't already say.
+const googleLabel = (name, address) => {
+  if (!address) return name;
+  return address.toLowerCase().startsWith(name.toLowerCase()) ? address : `${name}, ${address}`;
+};
+
+async function viaGoogle(q, c, max = 20) {
+  const key = googleKey();
+  if (!key) return [];
+  const body = { textQuery: q, pageSize: Math.min(Math.max(Number(max) || 10, 1), 20), languageCode: 'en' };
+  if (c) {
+    body.locationBias = {
+      circle: { center: { latitude: c.lat, longitude: c.lon }, radius: GOOGLE_BIAS_RADIUS_M },
+    };
+  }
+  const res = await fetch(GOOGLE_TEXT_SEARCH, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': key, 'X-Goog-FieldMask': GOOGLE_FIELDS },
+    body: JSON.stringify(body),
+    signal: timeoutSignal(6000),
+  });
+  if (!res.ok) return [];
+  const data = await res.json().catch(() => null);
+  return ((data && data.places) || [])
+    .map((pl) => {
+      const name = pl.displayName && pl.displayName.text;
+      const lat = pl.location && pl.location.latitude;
+      const lon = pl.location && pl.location.longitude;
+      if (!name || !Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+      return { name, label: googleLabel(name, pl.shortFormattedAddress || pl.formattedAddress), lat, lon, source: 'google' };
+    })
+    .filter(Boolean);
+}
+
 // Photon indexes POIs far better, Nominatim is stronger on plain place names —
 // so both are consulted and merged (Photon first, keeping its ranking on top)
 // rather than letting whichever answers first end the search. Dedupe collapses
@@ -706,13 +758,28 @@ async function viaNominatim(q, c) {
 const GEOCODE_LIMIT = 10;
 const GEOCODE_MAX = 20;
 
-async function geocodeHandler(q, near, limit) {
+async function geocodeHandler(q, near, limit, mode) {
   if (!q) return { status: 400, body: { error: 'missing_q' } };
   const c = coords(near);
   const want = Math.min(Number(limit) || GEOCODE_LIMIT, GEOCODE_MAX);
 
+  // As-you-type suggestions: Google only. The browser falls back to Photon on
+  // its own when this answers 501, and suggestions must never reach Nominatim
+  // (its usage policy forbids autocomplete-style querying).
+  if (mode === 'suggest') {
+    if (!googleKey()) return { status: 501, body: { error: 'google_not_configured' } };
+    let list = [];
+    try {
+      list = await viaGoogle(q, c, want);
+    } catch {
+      /* fall through to an empty answer */
+    }
+    return { status: 200, body: { candidates: dedupe(list).slice(0, want), provider: 'google' } };
+  }
+
   const found = [];
-  for (const lookup of [viaPhoton, viaNominatim]) {
+  const lookups = googleKey() ? [viaGoogle, viaPhoton, viaNominatim] : [viaPhoton, viaNominatim];
+  for (const lookup of lookups) {
     try {
       found.push(...(await lookup(q, c)));
     } catch {
@@ -815,6 +882,7 @@ function healthHandler() {
       ai: hasKey('gemini') || hasKey('groq'),
       providers: { gemini: hasKey('gemini'), groq: hasKey('groq') },
       primary: PRIMARY,
+      places: googleKey() ? 'google' : 'openstreetmap',
     },
   };
 }
@@ -906,6 +974,7 @@ module.exports = {
   usageHandler,
   chatHandler,
   geocodeHandler,
+  viaGoogle,
   resolveHandler,
   routeHandler,
   ROUTE_PROXY_WORST_CASE_MS,

@@ -1,80 +1,80 @@
 import React from 'react';
-import { MapPin, Thermometer, CloudRain, Eye, Droplets } from 'lucide-react';
 import { getWeatherAdvice } from '../utils/ThemeUtils';
+import { formatLocalTime } from '../utils/TimeUtils';
+import { getWeatherIcon } from '../utils/WeatherIcons';
 
-const HeroStat = ({ icon: Icon, label, value, sub }) => (
-  <div className="flex flex-col rounded-2xl glass-soft glass-hover p-4">
-    <div className="flex items-center gap-2 text-ink/55">
-      <Icon size={15} />
-      <span className="text-[11px] font-medium uppercase tracking-wide">{label}</span>
+// Vertical thermometer: today's low at the bottom, high at the top, and a dot
+// for where the temperature sits right now.
+const RangeScale = ({ temp, low, high }) => {
+  if (low === null || high === null) return null;
+  const span = Math.max(1, high - low);
+  const pct = Math.max(0, Math.min(100, ((temp - low) / span) * 100));
+  return (
+    <div className="flex min-h-[7.5rem] flex-col items-center py-1 text-[11px] font-medium text-ink/45" aria-label={`Today ${low}° to ${high}°`}>
+      <span className="tabular">{high}°</span>
+      <div
+        className="relative my-2 w-[3px] flex-1 rounded-full"
+        style={{ background: 'linear-gradient(180deg, rgb(var(--butter)), rgb(var(--lilac)))' }}
+      >
+        <span
+          className="absolute left-1/2 h-3 w-3 -translate-x-1/2 translate-y-1/2 rounded-full bg-ink ring-4 ring-page"
+          style={{ bottom: `${pct}%` }}
+        />
+      </div>
+      <span className="tabular">{low}°</span>
     </div>
-    <div className="mt-2 text-2xl font-bold text-ink">{value}</div>
-    {sub && <div className="mt-1 text-xs leading-snug text-ink/55">{sub}</div>}
+  );
+};
+
+const Fact = ({ label, value }) => (
+  <div className="py-4 pr-4">
+    <dt className="eyebrow !text-[10px] text-ink/40">{label}</dt>
+    <dd className="display tabular mt-1.5 text-2xl text-ink">{value}</dd>
   </div>
 );
 
-const WeatherCard = ({ weather, className = '' }) => {
-  const advice = getWeatherAdvice(weather);
-  const summary =
-    weather.todayHigh !== null
-      ? `Today, expect ${weather.description.toLowerCase()} with highs near ${weather.todayHigh}°C. ${advice}`
-      : advice;
-
-  const feelsSub =
-    weather.feels_like > weather.temp
-      ? 'Humidity is making it feel warmer'
-      : weather.feels_like < weather.temp
-      ? 'Wind is making it feel cooler'
-      : 'Close to the actual temperature';
+/*
+ * Current conditions, said briefly: a very large temperature beside today's
+ * range, the sky in serif italic, one line of advice, and four readings.
+ */
+const WeatherCard = ({ weather }) => {
+  const { time } = formatLocalTime(weather.localtime);
+  const cond = (weather.description || '').trim();
+  const place = [weather.city, weather.country].filter(Boolean).join(', ');
 
   return (
-    <div className={`flex flex-col rounded-3xl glass p-4 md:p-5 ${className}`}>
-      {/* Location pill */}
-      <div className="flex items-center gap-2 rounded-2xl glass-soft px-4 py-3 text-sm text-ink/85">
-        <MapPin size={16} className="shrink-0 text-ink/60" />
-        <span className="truncate">
-          {weather.city}
-          {weather.country ? `, ${weather.country}` : ''}
-        </span>
-      </div>
+    <div className="animate-fade-in-up">
+      <p className="eyebrow flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="text-lilac">Now</span>
+        <span className="text-ink/25">·</span>
+        <span className="text-butter">{place}</span>
+        {time && <span className="ml-auto font-medium normal-case tracking-normal text-ink/40">{time} local</span>}
+      </p>
 
-      {/* Hero */}
-      <div className="flex flex-1 flex-col items-center justify-center py-8 text-center">
-        <div className="text-7xl font-bold leading-none text-ink text-glow md:text-8xl">
-          {weather.temp}°
+      <div className="mt-6 grid items-end gap-x-16 gap-y-8 md:grid-cols-[auto_minmax(0,1fr)]">
+        <div className="flex items-stretch gap-4">
+          <span className="display tabular text-[clamp(6.5rem,17vw,12rem)] !leading-[0.8] text-ink">
+            {weather.temp}°
+          </span>
+          <RangeScale temp={weather.temp} low={weather.todayLow} high={weather.todayHigh} />
         </div>
-        <div className="mt-3 text-2xl font-semibold capitalize text-ink md:text-3xl">
-          {weather.description}
-        </div>
-        <p className="mt-4 max-w-sm text-sm leading-relaxed text-ink/70">{summary}</p>
-      </div>
 
-      {/* 2×2 stat grid */}
-      <div className="grid grid-cols-2 gap-3">
-        <HeroStat
-          icon={Thermometer}
-          label="Feels like"
-          value={`${weather.feels_like}°`}
-          sub={feelsSub}
-        />
-        <HeroStat
-          icon={CloudRain}
-          label="Precipitation"
-          value={`${weather.precipMm} mm`}
-          sub={`${weather.chanceOfRain}% chance of rain today`}
-        />
-        <HeroStat
-          icon={Eye}
-          label="Visibility"
-          value={`${weather.visibility} km`}
-          sub={weather.visibility >= 10 ? 'Crystal clear right now' : 'Reduced visibility'}
-        />
-        <HeroStat
-          icon={Droplets}
-          label="Humidity"
-          value={`${weather.humidity}%`}
-          sub={`The dew point is ${weather.dewpoint}° right now`}
-        />
+        <div className="min-w-0">
+          <div className="flex items-center gap-3">
+            {getWeatherIcon(cond, 30, weather.isDay)}
+            <span className="accent-serif truncate text-[clamp(1.9rem,3.4vw,2.75rem)] leading-tight text-ink">
+              {cond}
+            </span>
+          </div>
+          <p className="mt-2 text-sm text-ink/50">{getWeatherAdvice(weather)}</p>
+
+          <dl className="mt-6 grid grid-cols-2 border-t border-hairline sm:grid-cols-4">
+            <Fact label="Feels" value={`${weather.feels_like}°`} />
+            <Fact label="Rain" value={`${weather.chanceOfRain}%`} />
+            <Fact label="Humidity" value={`${weather.humidity}%`} />
+            <Fact label="Wind" value={`${Math.round(weather.wind)} km/h`} />
+          </dl>
+        </div>
       </div>
     </div>
   );

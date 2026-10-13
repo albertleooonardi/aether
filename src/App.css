@@ -1,50 +1,118 @@
-/* Keyframes consumed by WeatherAnimations via inline `animation` styles */
+/*
+ * Keyframes for the weather backdrop (WeatherAnimations.jsx). Every particle
+ * passes its own duration and delay in the `animation` shorthand, so nothing
+ * here may rely on a default duration.
+ */
 
-@keyframes rainFall {
+@keyframes wxRain {
   0% {
-    transform: translateY(-20px);
-    opacity: 0;
-  }
-  5% {
-    opacity: 1;
+    transform: translate3d(0, -12vh, 0);
   }
   100% {
-    transform: translateY(100vh);
-    opacity: 0.8;
+    transform: translate3d(var(--wx-drift, -6vw), 112vh, 0);
   }
 }
 
-@keyframes snowFall {
+@keyframes wxSnow {
   0% {
-    transform: translateY(-10px) translateX(0);
-    opacity: 0;
+    transform: translate3d(0, -6vh, 0);
   }
-  10% {
-    opacity: 1;
+  50% {
+    transform: translate3d(calc(var(--wx-drift, 30px) * -0.6), 50vh, 0);
   }
   100% {
-    transform: translateY(100vh) translateX(var(--drift, 30px));
-    opacity: 0.6;
+    transform: translate3d(var(--wx-drift, 30px), 106vh, 0);
   }
 }
 
-@keyframes cloudMove {
+@keyframes wxCloud {
   0% {
-    transform: translateX(-200px);
+    transform: translate3d(-40vw, 0, 0);
   }
   100% {
-    transform: translateX(calc(100vw + 200px));
+    transform: translate3d(140vw, 0, 0);
   }
 }
 
-@keyframes twinkle {
+@keyframes wxTwinkle {
   0%,
   100% {
-    opacity: 0.2;
+    opacity: 0.15;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+
+@keyframes wxMote {
+  0% {
+    transform: translate3d(0, 0, 0);
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+  }
+  85% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate3d(var(--wx-drift, 20px), -38vh, 0);
+    opacity: 0;
+  }
+}
+
+@keyframes wxSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes wxBreathe {
+  0%,
+  100% {
+    opacity: 0.75;
     transform: scale(1);
   }
   50% {
     opacity: 1;
-    transform: scale(1.2);
+    transform: scale(1.06);
+  }
+}
+
+@keyframes wxFog {
+  0%,
+  100% {
+    transform: translate3d(-8vw, 0, 0);
+  }
+  50% {
+    transform: translate3d(8vw, 0, 0);
+  }
+}
+
+/* Mostly dark, with two quick flickers per cycle. */
+@keyframes wxFlash {
+  0%,
+  88%,
+  91%,
+  93%,
+  100% {
+    opacity: 0;
+  }
+  89% {
+    opacity: 0.55;
+  }
+  92% {
+    opacity: 0.3;
+  }
+}
+
+/* Motion off: keep the still parts (stars, sun glow, clouds in place) and
+ * drop anything that only makes sense while moving. */
+@media (prefers-reduced-motion: reduce) {
+  .wx-fx * {
+    animation: none !important;
+  }
+  .wx-fx .wx-moving {
+    display: none;
   }
 }

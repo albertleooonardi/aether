@@ -7,12 +7,12 @@ const away = (d) => (d < 1 ? `${Math.round(d * 1000)} m` : `${d.toFixed(d < 10 ?
 // "Which one did you mean?" — shown when a place name matches several spots, so a
 // wrong guess costs a tap instead of a 27km detour to an estate agent's office.
 const PlacePicker = ({ data, onPick }) => (
-  <div className="mt-2 overflow-hidden rounded-2xl border border-ink/10 bg-ink/5">
-    <div className="px-3 pb-1.5 pt-2.5 text-[11px] uppercase tracking-wide text-ink/40">
+  <div className="mt-2.5 overflow-hidden rounded-2xl border border-ink/[0.1]">
+    <div className="eyebrow truncate px-3 pb-1 pt-2.5 !text-[10px] text-ink/40">
       {data.chosen ? 'Destination' : `${data.candidates.length} matches for “${data.query}”`}
     </div>
 
-    <div className="space-y-1 px-2 pb-2">
+    <div className="space-y-0.5 px-1.5 pb-1.5">
       {data.candidates.map((c, i) => {
         const picked = data.chosen && data.chosen.lat === c.lat && data.chosen.lon === c.lon;
         const dimmed = data.chosen && !picked;
@@ -25,7 +25,7 @@ const PlacePicker = ({ data, onPick }) => (
             disabled={!!data.chosen}
             onClick={() => onPick(c)}
             className={`flex w-full items-start gap-2 rounded-xl px-2.5 py-2 text-left text-xs transition ${
-              picked ? 'bg-sky-400/15 text-ink' : 'text-ink/75 hover:bg-ink/10 hover:text-ink'
+              picked ? 'bg-ink/[0.07] text-ink' : 'text-ink/75 hover:bg-ink/[0.06] hover:text-ink'
             } ${data.chosen ? 'cursor-default' : ''}`}
           >
             {picked ? (
@@ -51,7 +51,7 @@ const PlacePicker = ({ data, onPick }) => (
     </div>
 
     {!data.chosen && (
-      <p className="px-3 pb-2.5 text-[11px] text-ink/40">
+      <p className="border-t border-ink/[0.07] px-3 py-2 text-[11px] text-ink/40">
         None of these? Paste a Google Maps link and I’ll use that instead.
       </p>
     )}

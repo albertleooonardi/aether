@@ -1,20 +1,21 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Loader2, CloudSun, Map as MapIcon, Sun, Moon } from 'lucide-react';
+import { Sun, Moon, ArrowUpRight } from 'lucide-react';
 import Logo from './components/Logo';
 import { useTheme } from './utils/useTheme';
 import MapPage from './components/map/MapPage';
 import SearchBar from './components/SearchBar';
 import WeatherCard from './components/WeatherCard';
+import Section from './components/Section';
 import HourlyForecast from './components/HourlyForecast';
 import ForecastCard from './components/ForecastCard';
-import UVCard from './components/UVCard';
-import WindCard from './components/WindCard';
+import DetailsGrid from './components/DetailsGrid';
 import WeatherAnimations from './components/WeatherAnimations';
 import ErrorMessage from './components/ErrorMessage';
 import EmptyState from './components/EmptyState';
 import ChatWidget from './components/chat/ChatWidget';
 import { fetchWeatherByCoords, fetchWeatherByCity } from './services/WeatherService';
 import { saveLastCity, loadLastCity } from './services/StorageService';
+import { addRecent } from './services/RecentPlaces';
 import './App.css';
 
 const App = () => {
@@ -160,7 +161,9 @@ const App = () => {
       const upcoming = days.slice(1);
       const chosen = upcoming.length >= 3 ? upcoming.slice(0, 3) : days.slice(0, 3);
       const forecastData = chosen.map((day) => ({
-        date: new Date(day.date),
+        // "YYYY-MM-DD" parses as UTC midnight, which is the previous day west
+        // of Greenwich; anchor it to local midnight instead.
+        date: new Date(`${day.date}T00:00`),
         high: Math.round(day.day.maxtemp_c),
         low: Math.round(day.day.mintemp_c),
         weather: day.day.condition.text,
@@ -171,7 +174,14 @@ const App = () => {
     }
 
     await saveLastCity(data.location.name);
-    setCity(data.location.name);
+    addRecent({
+      name: data.location.name,
+      label: [data.location.name, data.location.region, data.location.country].filter(Boolean).join(', '),
+      lat: data.location.lat,
+      lon: data.location.lon,
+    });
+    // The reading names the place, so the field is cleared for the next search.
+    setCity('');
     setLoading(false);
   };
 
@@ -179,101 +189,157 @@ const App = () => {
     handleFetchByCity(city);
   };
 
+  // A picked suggestion carries exact coordinates — use them rather than
+  // re-resolving the name, which could land on a namesake elsewhere.
+  const handlePickPlace = (place) => {
+    handleFetchByCoords(place.lat, place.lon);
+  };
+
+  // "Full forecast" from a spot on the map.
+  const openWeatherAt = (place) => {
+    setView('weather');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    handleFetchByCoords(place.lat, place.lon);
+  };
+
+  const near = weather && Number.isFinite(weather.lat) ? { lat: weather.lat, lon: weather.lon } : null;
+
+  const search = (
+    <SearchBar
+      city={city}
+      setCity={setCity}
+      onSearch={handleSearch}
+      onPickPlace={handlePickPlace}
+      onLocate={getUserLocation}
+      loading={loading}
+      locating={locating}
+      near={near}
+    />
+  );
+
+  const isMap = view === 'map';
+
   return (
-    <div className="relative min-h-screen overflow-hidden bg-page transition-colors duration-300">
-      <WeatherAnimations weather={weather} />
+    <div className="relative min-h-screen bg-page transition-colors duration-300">
+      {!isMap && <WeatherAnimations weather={weather} />}
 
-      <div className="relative z-10 mx-auto w-full max-w-[1800px] px-4 py-5 md:px-8 md:py-6 lg:px-12">
-        {/* Brand + view switch */}
-        <header className="mb-5 flex items-center gap-3">
-          <Logo size={40} />
-          <span className="text-xl font-semibold tracking-[0.22em] text-ink">AETHER</span>
+      {/* Floating pill navigation */}
+      <header className="sticky top-0 z-40 px-3 pt-3 md:px-6 md:pt-4">
+        <nav className="panel-float mx-auto flex h-14 max-w-4xl items-center gap-1 rounded-full pl-4 pr-2 sm:pl-6">
+          <button
+            onClick={() => setView('weather')}
+            aria-label="Aether home"
+            className="flex items-center gap-2.5 text-ink"
+          >
+            <Logo size={18} />
+            <span className="hidden text-[13px] font-bold tracking-[0.34em] sm:inline">AETHER</span>
+          </button>
 
-          <nav className="ml-auto flex gap-1 rounded-2xl glass p-1">
+          <div className="mx-auto flex items-center gap-0.5">
             {[
-              { id: 'weather', label: 'Weather', icon: CloudSun },
-              { id: 'map', label: 'Map', icon: MapIcon },
-            ].map(({ id, label, icon: Icon }) => (
+              { id: 'weather', label: 'Weather' },
+              { id: 'map', label: 'Map' },
+            ].map(({ id, label }) => (
               <button
                 key={id}
                 onClick={() => setView(id)}
                 aria-pressed={view === id}
-                className={`flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium transition ${
-                  view === id ? 'bg-accent text-accentFg' : 'text-ink/60 hover:bg-ink/10 hover:text-ink'
+                className={`relative rounded-full px-4 py-2 text-sm font-medium transition-colors ${
+                  view === id ? 'text-ink' : 'text-ink/50 hover:text-ink'
                 }`}
               >
-                <Icon size={14} />
-                <span className="hidden sm:inline">{label}</span>
+                {label}
+                {view === id && (
+                  <span className="absolute bottom-0.5 left-1/2 h-1 w-1 -translate-x-1/2 rounded-full bg-butter" />
+                )}
               </button>
             ))}
-          </nav>
+          </div>
 
           <button
             onClick={toggle}
             aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
             title={isDark ? 'Light mode' : 'Dark mode'}
-            className="flex h-10 w-10 items-center justify-center rounded-2xl glass text-ink/60 transition hover:text-ink"
+            className="flex h-10 w-10 items-center justify-center rounded-full text-ink/55 transition hover:bg-ink/[0.07] hover:text-ink"
           >
             {isDark ? <Sun size={16} /> : <Moon size={16} />}
           </button>
-        </header>
+          <button
+            onClick={() => {
+              setView('weather');
+              getUserLocation();
+            }}
+            aria-label="Weather at my location"
+            className="btn-pill h-10 px-3 text-sm sm:px-4"
+          >
+            <span className="hidden sm:inline">Near me</span>
+            <ArrowUpRight size={15} />
+          </button>
+        </nav>
+      </header>
 
-        {error && view === 'weather' && <ErrorMessage message={error} />}
-
+      <main
+        className={`relative z-10 mx-auto w-full ${
+          isMap ? 'max-w-[1800px] px-3 md:px-6' : 'max-w-6xl px-5 md:px-10'
+        }`}
+      >
         {mapMounted && (
-          <div className={view === 'map' ? '' : 'hidden'}>
+          <div className={isMap ? 'pb-4 pt-3 md:pt-4' : 'hidden'}>
             <MapPage
               weather={weather}
               theme={theme}
-              visible={view === 'map'}
+              visible={isMap}
               initialRoute={chatRoute}
               onRouteShown={() => setChatRoute(null)}
+              onOpenWeather={openWeatherAt}
             />
           </div>
         )}
 
-        <div className={view === 'weather' ? 'grid animate-fade-in-up gap-4 lg:grid-cols-5' : 'hidden'}>
-          {/* Left: search + hero */}
-          <div className="flex flex-col gap-4 lg:col-span-2">
-            <SearchBar
-              city={city}
-              setCity={setCity}
-              onSearch={handleSearch}
-              onLocate={getUserLocation}
-              loading={loading}
-              locating={locating}
-            />
-
-            {weather && !loading && <WeatherCard weather={weather} className="flex-1" />}
-
-            {loading && (
-              <div className="flex flex-1 items-center justify-center rounded-3xl glass py-20">
-                <Loader2 size={28} className="animate-spin text-ink/70" />
-              </div>
-            )}
-
-            {!weather && !loading && !error && <EmptyState locating={locating} />}
-          </div>
-
-          {/* Right: forecasts + detail cards */}
-          {weather && !loading && (
-            <div className="flex flex-col gap-4 lg:col-span-3">
-              {hourly.length > 0 && <HourlyForecast hours={hourly} />}
-              {forecast.length > 0 && <ForecastCard forecast={forecast} />}
-              <div className="grid gap-4 sm:grid-cols-2">
-                <UVCard weather={weather} />
-                <WindCard weather={weather} />
-              </div>
+        <div className={isMap ? 'hidden' : ''}>
+          {/* Hero: search first, then the current reading */}
+          <section className="pb-16 pt-10 md:pb-24 md:pt-16">
+            {search}
+            {error && <ErrorMessage message={error} />}
+            <div className="mt-14 md:mt-20">
+              {weather ? (
+                <div className={`transition-opacity duration-300 ${loading ? 'opacity-50' : ''}`} aria-busy={loading}>
+                  <WeatherCard weather={weather} />
+                </div>
+              ) : (
+                <EmptyState locating={locating} loading={loading} />
+              )}
             </div>
-          )}
+          </section>
 
-          {loading && (
-            <div className="hidden items-center justify-center rounded-3xl glass lg:col-span-3 lg:flex">
-              <Loader2 size={28} className="animate-spin text-ink/60" />
+          {weather && (
+            <div className={`transition-opacity duration-300 ${loading ? 'opacity-50' : ''}`}>
+              {hourly.length > 0 && (
+                <Section
+                  index="01"
+                  title="Next 12 hours"
+                  aside={`Peak ${Math.max(...hourly.map((h) => h.temp))}° · low ${Math.min(...hourly.map((h) => h.temp))}°`}
+                >
+                  <HourlyForecast hours={hourly} />
+                </Section>
+              )}
+              {forecast.length > 0 && (
+                <Section index="02" title={`${forecast.length}-day outlook`} aside="Daily low to high, on a shared scale">
+                  <ForecastCard forecast={forecast} />
+                </Section>
+              )}
+              <Section index="03" title="Conditions in detail" aside={`Updated ${weather.localtime?.split(' ')[1] || ''} local time`}>
+                <DetailsGrid weather={weather} />
+              </Section>
+
+              <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-hairline py-10 text-xs text-ink/40">
+                <span className="eyebrow !text-[10px]">Aether · Weather, written plainly</span>
+                <span>Forecast by WeatherAPI · Radar by RainViewer · Maps by Esri and OpenStreetMap</span>
+              </footer>
             </div>
           )}
         </div>
-      </div>
+      </main>
 
       <ChatWidget
         weather={weather}

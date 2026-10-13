@@ -24,6 +24,13 @@ module.exports = {
         panel: 'rgb(var(--panel) / <alpha-value>)',
         accent: 'rgb(var(--accent) / <alpha-value>)',
         accentFg: 'rgb(var(--accent-fg) / <alpha-value>)',
+        // Editorial accents (eyebrows, range bars, radar timeline) — sparingly.
+        lilac: 'rgb(var(--lilac) / <alpha-value>)',
+        butter: 'rgb(var(--butter) / <alpha-value>)',
+      },
+      fontFamily: {
+        sans: ['"Plus Jakarta Sans"', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'sans-serif'],
+        serif: ['"Instrument Serif"', 'ui-serif', 'Georgia', 'serif'],
       },
       backgroundImage: {
         'gradient-radial': 'radial-gradient(circle at center, var(--tw-gradient-stops))',

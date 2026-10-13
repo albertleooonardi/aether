@@ -1,28 +1,22 @@
 import React from 'react';
-import { Compass, Search, MapPin } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 
-const EmptyState = ({ locating }) => (
-  <div className="mt-10 flex flex-col items-center text-center animate-fade-in-up">
-    <div className="mb-6 flex h-24 w-24 items-center justify-center rounded-full glass animate-pulse-slow">
-      <Compass size={44} strokeWidth={1.5} className="text-ink/80 drop-glow" />
-    </div>
-    <h2 className="text-xl font-semibold text-ink">
-      {locating ? 'Finding your location…' : 'Discover the weather anywhere'}
-    </h2>
-    <p className="mt-2 max-w-sm text-sm text-ink/60">
-      {locating
-        ? 'Please allow location access for local conditions.'
-        : 'Search for a city or use your location to see live conditions and a 3-day forecast.'}
+// Shown under the search until the first reading lands.
+const EmptyState = ({ locating, loading }) => (
+  <div className="animate-fade-in-up">
+    <p className="eyebrow flex items-center gap-2">
+      <span className="text-lilac">Aether</span>
+      <span className="text-ink/25">·</span>
+      <span className="text-butter">{loading ? 'Reading the sky' : locating ? 'Finding you' : 'Live weather'}</span>
+      {(loading || locating) && <Loader2 size={12} className="animate-spin text-ink/40" />}
     </p>
-
-    <div className="mt-6 flex flex-wrap justify-center gap-3 text-sm text-ink/70">
-      <span className="flex items-center gap-2 rounded-full glass-soft px-4 py-2">
-        <Search size={14} /> Type a city name
-      </span>
-      <span className="flex items-center gap-2 rounded-full glass-soft px-4 py-2">
-        <MapPin size={14} /> Tap the pin for your area
-      </span>
-    </div>
+    <h1 className="display mt-6 text-[clamp(2.6rem,7vw,5.5rem)] text-ink">
+      Weather, <span className="accent-serif text-[1.06em]">written</span>
+      <span className="text-ink/40"> plainly.</span>
+    </h1>
+    <p className="mt-5 max-w-xl text-base text-ink/50">
+      {locating ? 'Allow location access, or search any place above.' : 'Search any place above, or tap a suggestion.'}
+    </p>
   </div>
 );
 

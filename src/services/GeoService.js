@@ -246,6 +246,41 @@ export const photonSuggest = async (query, near, signal) => {
   }
 };
 
+// Google Places suggestions through the backend proxy (the key lives there).
+// The proxy answers 501 when no Google key is configured; that, or a backend
+// that isn't running, parks Google for a while so typing doesn't pay for a
+// failing request on every keystroke, and Photon carries the suggestions.
+const GOOGLE_RETRY_MS = 5 * 60 * 1000;
+let googleOffUntil = 0;
+
+export const resetPlaceSuggest = () => {
+  googleOffUntil = 0;
+};
+
+export const placeSuggest = async (query, near, signal) => {
+  if (Date.now() >= googleOffUntil) {
+    const at = biased(near) ? `&near=${near.lat},${near.lon}` : '';
+    try {
+      const res = await fetch(
+        `/api/geocode?q=${encodeURIComponent(query)}&limit=${SUGGEST_LIMIT}&mode=suggest${at}`,
+        { signal }
+      );
+      if (res.ok) {
+        const body = await res.json();
+        const list = (body.candidates || []).filter((c) => typeof c.lat === 'number' && typeof c.lon === 'number');
+        if (list.length) return dedupe(list).slice(0, SUGGEST_LIMIT);
+        // Google found nothing for this text: Photon may still know it.
+      } else {
+        googleOffUntil = Date.now() + GOOGLE_RETRY_MS;
+      }
+    } catch (e) {
+      if (e && e.name === 'AbortError') return []; // superseded by newer typing
+      googleOffUntil = Date.now() + GOOGLE_RETRY_MS;
+    }
+  }
+  return photonSuggest(query, near, signal);
+};
+
 // A suggestion click stores the picked place alongside the exact text it wrote
 // into the field. If the user edits that text afterward, the picked pin may no
 // longer be what the (now different) string describes, so a caller about to
@@ -266,7 +301,13 @@ const SUGGEST_DEBOUNCE_MS = 300;
 // the service layer doesn't import from the chat layer.
 export const looksLikeUrl = (text) => /https?:\/\/\S+/i.test(text || '');
 
-export const createSuggestTypeahead = ({ minLength = MIN_SUGGEST_LEN, debounceMs = SUGGEST_DEBOUNCE_MS } = {}) => {
+// `source` defaults to Photon-only; the app's search boxes pass placeSuggest so
+// Google answers first when the backend has a key.
+export const createSuggestTypeahead = ({
+  minLength = MIN_SUGGEST_LEN,
+  debounceMs = SUGGEST_DEBOUNCE_MS,
+  source = photonSuggest,
+} = {}) => {
   let timer = null;
   let controller = null;
   let seq = 0;
@@ -290,7 +331,7 @@ export const createSuggestTypeahead = ({ minLength = MIN_SUGGEST_LEN, debounceMs
     const mySeq = seq;
     timer = setTimeout(async () => {
       controller = new AbortController();
-      const list = await photonSuggest(text, near, controller.signal);
+      const list = await source(text, near, controller.signal);
       if (mySeq === seq) onResult(list);
     }, debounceMs);
   };
