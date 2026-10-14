@@ -38,6 +38,7 @@ import {
 import { enableSmoothWheelZoom } from '../../utils/SmoothZoom';
 import { getWeatherIcon } from '../../utils/WeatherIcons';
 import { fetchWeatherByCoords } from '../../services/WeatherService';
+import { getDevicePosition } from '../../services/Location';
 import {
   geocode,
   geocodeCandidates,
@@ -372,22 +373,17 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
 
     // Open on the device's location, Google-Maps style. Until (or unless) a fix
     // arrives, the view above stays: the weather page's place, else Indonesia.
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          if (!mapRef.current) return;
-          const here = { lat: pos.coords.latitude, lon: pos.coords.longitude, acc: pos.coords.accuracy };
-          setMyPos(here);
-          if (!userTouched.current && !routeRef.current) {
-            mapRef.current.flyTo([here.lat, here.lon], 13, { duration: 1 });
-          }
-        },
-        () => {
-          /* denied or unavailable: keep the fallback view */
-        },
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 120000 }
-      );
-    }
+    getDevicePosition({ maximumAge: 120000 })
+      .then((here) => {
+        if (!mapRef.current) return;
+        setMyPos(here);
+        if (!userTouched.current && !routeRef.current) {
+          mapRef.current.flyTo([here.lat, here.lon], 13, { duration: 1 });
+        }
+      })
+      .catch(() => {
+        /* denied or unavailable: keep the fallback view */
+      });
 
     return () => {
       map.remove();
@@ -798,22 +794,17 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
 
   /* ---------------- geolocation ---------------- */
   const withPosition = (onPos) => {
-    if (!navigator.geolocation) {
-      setError('Location is not available in this browser.');
-      return;
-    }
     setLocating(true);
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
+    setError('');
+    getDevicePosition()
+      .then((here) => {
         setLocating(false);
-        onPos({ lat: pos.coords.latitude, lon: pos.coords.longitude, acc: pos.coords.accuracy });
-      },
-      () => {
+        onPos(here);
+      })
+      .catch((err) => {
         setLocating(false);
-        setError("Couldn't get your location. Check the browser's location permission.");
-      },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
-    );
+        setError(err.message);
+      });
   };
 
   const locate = () =>

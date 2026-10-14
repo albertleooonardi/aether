@@ -16,6 +16,7 @@ import ChatWidget from './components/chat/ChatWidget';
 import { fetchWeatherByCoords, fetchWeatherByCity } from './services/WeatherService';
 import { saveLastCity, loadLastCity } from './services/StorageService';
 import { addRecent } from './services/RecentPlaces';
+import { getDevicePosition } from './services/Location';
 import './App.css';
 
 const App = () => {
@@ -26,6 +27,7 @@ const App = () => {
   const [loading, setLoading] = useState(false);
   const [locating, setLocating] = useState(false);
   const [error, setError] = useState('');
+  const [locError, setLocError] = useState('');
   const { theme, toggle, isDark } = useTheme();
   const [view, setView] = useState('weather'); // 'weather' | 'map'
   // Mount the map on first visit, then keep it alive across tab switches so
@@ -49,21 +51,19 @@ const App = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const getUserLocation = useCallback(() => {
-    if (navigator.geolocation) {
-      setLocating(true);
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          setLocating(false);
-          handleFetchByCoords(position.coords.latitude, position.coords.longitude);
-        },
-        () => {
-          setLocating(false);
-          handleLoadLastCity();
-        }
-      );
-    } else {
-      handleLoadLastCity();
+  // On load a failure quietly falls back to the last city; when the person
+  // asked ("Near me") they get told why — on iPhone that's usually a setting.
+  const getUserLocation = useCallback(async ({ manual = false } = {}) => {
+    setLocating(true);
+    setLocError('');
+    try {
+      const { lat, lon } = await getDevicePosition();
+      setLocating(false);
+      handleFetchByCoords(lat, lon);
+    } catch (err) {
+      setLocating(false);
+      if (manual) setLocError(err.message);
+      else handleLoadLastCity();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [handleLoadLastCity]);
@@ -75,6 +75,7 @@ const App = () => {
   const handleFetchByCoords = async (lat, lon) => {
     setLoading(true);
     setError('');
+    setLocError('');
 
     try {
       const data = await fetchWeatherByCoords(lat, lon);
@@ -90,6 +91,7 @@ const App = () => {
 
     setLoading(true);
     setError('');
+    setLocError('');
 
     try {
       const data = await fetchWeatherByCity(cityName);
@@ -212,7 +214,7 @@ const App = () => {
       setCity={setCity}
       onSearch={handleSearch}
       onPickPlace={handlePickPlace}
-      onLocate={getUserLocation}
+      onLocate={() => getUserLocation({ manual: true })}
       loading={loading}
       locating={locating}
       near={near}
@@ -253,7 +255,7 @@ const App = () => {
             <button
               onClick={() => {
                 setView('weather');
-                getUserLocation();
+                getUserLocation({ manual: true });
               }}
               aria-label="Weather at my location"
               className="btn-pill h-10 px-3.5 text-sm sm:px-4"
@@ -313,7 +315,7 @@ const App = () => {
           {/* Hero: search first, then the current reading */}
           <section className="pb-16 pt-10 md:pb-24 md:pt-16">
             {search}
-            {error && <ErrorMessage message={error} />}
+            {locError ? <ErrorMessage message={locError} hint={null} /> : error && <ErrorMessage message={error} />}
             <div className="mt-14 md:mt-20">
               {weather ? (
                 <div className={`transition-opacity duration-300 ${loading ? 'opacity-50' : ''}`} aria-busy={loading}>
