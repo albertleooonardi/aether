@@ -15,6 +15,8 @@ import {
   Plus,
   Minus,
   ArrowUpDown,
+  ArrowRight,
+  Pencil,
   Play,
   Pause,
   CloudRain,
@@ -1028,8 +1030,8 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
       const wide = map.getSize().x >= 760;
       const phone = window.matchMedia?.(NARROW_QUERY).matches;
       map.fitBounds(L.latLngBounds(route.routes[route.bestIndex].coordinates), {
-        paddingTopLeft: wide ? [420, 60] : phone ? [24, 200] : [30, 300],
-        paddingBottomRight: phone ? [70, 300] : [70, 90],
+        paddingTopLeft: wide ? [420, 60] : phone ? [32, 120] : [30, 300],
+        paddingBottomRight: phone ? [64, 400] : [70, 90],
       });
     }
   }, [ready, route, selRoute, theme]); // theme: stroke ramp is per-basemap, so a flip must redraw
@@ -1186,20 +1188,46 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
   const showNames = !layers.labels && (viewport?.zoom ?? 0) >= NAME_ZOOM;
   const chipByName = new Map(chips.map((c) => [c.name, c]));
 
+  // Phones, once a route is drawn: the search panel steps aside and the route
+  // sheet at the bottom carries the trip (tap its header to edit).
+  const routeFolded = narrow && !!route && formCollapsed;
+  const editRoute = () => {
+    setFormCollapsed(false);
+    setTimeout(() => destInput.current?.focus(), 0);
+  };
+
   // Route options, rendered under the search panel on desktop and as a bottom
   // sheet on phones (see the two placements in the JSX).
   const routePanel = route && (
           <div className={`panel-float overflow-hidden rounded-[22px] ${narrow ? '' : 'mt-2'}`}>
-            <div className="flex items-center gap-2 px-4 py-3 text-xs text-ink/70">
-              <span className="h-2 w-2 shrink-0 rounded-full bg-sky-300" />
-              <span className="truncate">{route.origin.name}</span>
-              <span className="text-ink/30">to</span>
-              <span className="h-2 w-2 shrink-0 rounded-full bg-orange-300" />
-              <span className="truncate font-medium text-ink">{route.dest.name}</span>
+            <div className="flex items-center gap-1 py-2 pl-2 pr-2 text-xs text-ink/70 sm:gap-2 sm:py-3 sm:pl-4">
+              {narrow ? (
+                <button
+                  type="button"
+                  onClick={editRoute}
+                  aria-label="Edit route"
+                  className="flex min-w-0 flex-1 items-center gap-2 rounded-full px-2 py-2 text-left text-[13px] transition active:bg-ink/[0.06]"
+                >
+                  <span className="h-2 w-2 shrink-0 rounded-full bg-sky-300" />
+                  <span className="min-w-0 max-w-[45%] shrink-[2] truncate">{route.origin.name}</span>
+                  <ArrowRight size={12} className="shrink-0 text-ink/35" />
+                  <span className="h-2 w-2 shrink-0 rounded-full bg-orange-300" />
+                  <span className="min-w-0 truncate font-medium text-ink">{route.dest.name}</span>
+                  <Pencil size={12} className="ml-auto shrink-0 text-ink/45" />
+                </button>
+              ) : (
+                <>
+                  <span className="h-2 w-2 shrink-0 rounded-full bg-sky-300" />
+                  <span className="truncate">{route.origin.name}</span>
+                  <span className="text-ink/30">to</span>
+                  <span className="h-2 w-2 shrink-0 rounded-full bg-orange-300" />
+                  <span className="truncate font-medium text-ink">{route.dest.name}</span>
+                </>
+              )}
               <button
                 onClick={() => setRouteOpen((o) => !o)}
                 aria-label={routeOpen ? 'Collapse route options' : 'Expand route options'}
-                className="ml-auto flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-ink/50 hover:bg-ink/10 hover:text-ink"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-ink/50 hover:bg-ink/10 hover:text-ink sm:ml-auto"
               >
                 <ChevronDown size={14} className={`transition-transform ${routeOpen ? '' : '-rotate-90'}`} />
               </button>
@@ -1292,7 +1320,14 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
         onPick={pickItem}
         onRemove={(item) => setRecents(removeRecent(item.place))}
         loading={searching}
-        className="max-h-[min(22rem,50vh)]"
+        className={
+          // Phones: stop above the tab bar, whatever the form above it needs.
+          !narrow
+            ? 'max-h-[min(22rem,50vh)]'
+            : mode === 'directions'
+            ? 'max-h-[calc(100dvh-var(--map-top)-var(--map-bottom)-14.5rem)]'
+            : 'max-h-[calc(100dvh-var(--map-top)-var(--map-bottom)-8rem)]'
+        }
       />
     </div>
   );
@@ -1303,7 +1338,7 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
   return (
     <div
       data-basemap={layers.labels ? 'street' : 'canvas'}
-      className="relative h-[calc(100dvh-10.5rem-env(safe-area-inset-bottom))] min-h-[420px] overflow-hidden rounded-[24px] border border-hairline sm:h-[calc(100dvh-6.5rem)] sm:min-h-[520px] sm:rounded-[28px] md:h-[calc(100dvh-7.5rem)]"
+      className="map-shell fixed inset-0 overflow-hidden sm:relative sm:inset-auto sm:h-[calc(100dvh-6.5rem)] sm:min-h-[520px] sm:rounded-[28px] sm:border sm:border-hairline md:h-[calc(100dvh-7.5rem)]"
     >
       <div ref={el} className="absolute inset-0 z-0" />
 
@@ -1320,7 +1355,12 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
       )}
 
       {/* ---------- search / directions panel ---------- */}
-      <div ref={panelRef} className="absolute left-3 top-3 z-30 w-[min(380px,calc(100%-4.5rem))] sm:w-[min(380px,calc(100%-1.5rem))]">
+      <div
+        ref={panelRef}
+        className={`absolute left-3 top-[var(--map-top)] z-30 w-[calc(100%-4.5rem)] sm:top-3 sm:w-[min(380px,calc(100%-1.5rem))] ${
+          routeFolded ? 'hidden' : ''
+        }`}
+      >
         <div className="panel-float overflow-hidden rounded-[22px]">
           {/* mode switch */}
           <div className="p-2 pb-0">
@@ -1382,23 +1422,6 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
                 )}
               </div>
             </form>
-          ) : narrow && formCollapsed && route ? (
-            <button
-              type="button"
-              onClick={() => {
-                setFormCollapsed(false);
-                setTimeout(() => destInput.current?.focus(), 0);
-              }}
-              aria-label="Edit route"
-              className="flex w-full min-w-0 items-center gap-2 px-4 py-3 text-left text-sm"
-            >
-              <span className="h-2 w-2 shrink-0 rounded-full bg-sky-300" />
-              <span className="min-w-0 truncate text-ink/70">{route.origin.name}</span>
-              <span className="shrink-0 text-ink/30">to</span>
-              <span className="h-2 w-2 shrink-0 rounded-full bg-orange-300" />
-              <span className="min-w-0 flex-1 truncate font-medium text-ink">{route.dest.name}</span>
-              <span className="shrink-0 rounded-full bg-ink/[0.07] px-2.5 py-1 text-xs font-medium text-ink/70">Edit</span>
-            </button>
           ) : (
             <form onSubmit={handleDirections} className="p-2">
               <div className="relative space-y-1.5 pr-10">
@@ -1441,6 +1464,15 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
                 {busy ? <Loader2 size={15} className="animate-spin" /> : <Navigation size={14} />}
                 {busy ? 'Checking the roads…' : 'Get route with rain check'}
               </button>
+              {narrow && route && !busy && (
+                <button
+                  type="button"
+                  onClick={() => setFormCollapsed(true)}
+                  className="mt-1 flex h-9 w-full items-center justify-center text-xs font-medium text-ink/55 transition hover:text-ink"
+                >
+                  Back to route
+                </button>
+              )}
             </form>
           )}
 
@@ -1454,15 +1486,15 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
       </div>
 
       {/* Phones: route options as a bottom sheet, clear of the search panel. */}
-      {narrow && route && !detail && (
-        <div className="absolute inset-x-2 bottom-2 z-30 max-h-[46%] overflow-y-auto rounded-[22px] thin-scroll animate-fade-in-up">
+      {routeFolded && !detail && (
+        <div className="absolute inset-x-3 bottom-[var(--map-bottom)] z-30 max-h-[48dvh] overflow-y-auto rounded-[22px] thin-scroll animate-fade-in-up">
           {routePanel}
         </div>
       )}
 
       {/* ---------- map controls ---------- */}
-      <div className="absolute right-3 top-3 z-[35] flex flex-col items-end gap-2">
-        <div className="panel-float flex flex-col overflow-hidden rounded-2xl">
+      <div className="absolute right-3 top-[var(--map-top)] z-[35] flex flex-col items-end gap-2 sm:top-3">
+        <div className="panel-float hidden flex-col overflow-hidden rounded-2xl sm:flex">
           <button onClick={() => zoomBy(1)} aria-label="Zoom in" title="Zoom in" className="map-btn">
             <Plus size={17} />
           </button>
@@ -1523,9 +1555,9 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
 
       {/* ---------- weather detail panel ---------- */}
       {detail && (
-        <div className="absolute inset-x-0 bottom-0 z-[38] animate-fade-in-up sm:bottom-auto sm:left-auto sm:right-16 sm:top-3 sm:w-[21rem]">
+        <div className="absolute inset-x-3 bottom-[var(--map-bottom)] z-[38] animate-fade-in-up sm:bottom-auto sm:left-auto sm:right-16 sm:top-3 sm:w-[21rem]">
           <div
-            className="panel-float max-h-[calc(100dvh-15rem)] overflow-y-auto rounded-t-[22px] px-5 pb-4 pt-2 thin-scroll sm:max-h-[calc(100dvh-10rem)] sm:rounded-[22px] sm:pb-5 sm:pt-5"
+            className="panel-float max-h-[calc(100dvh-var(--map-top)-var(--map-bottom)-1rem)] overflow-y-auto rounded-[22px] px-5 pb-4 pt-2 thin-scroll sm:max-h-[calc(100dvh-10rem)] sm:pb-5 sm:pt-5"
             onTouchStart={(e) => {
               sheetTouch.current = e.touches[0].clientY;
             }}
@@ -1665,8 +1697,8 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
 
       {/* ---------- first-use hint + radar timeline ---------- */}
       <div
-        className={`pointer-events-none absolute bottom-3 left-3 right-3 z-20 flex flex-col items-center gap-2 sm:bottom-4 sm:left-1/2 sm:right-auto sm:w-[min(460px,calc(100%-14rem))] sm:-translate-x-1/2 ${
-          detail || (narrow && route) ? 'hidden sm:flex' : ''
+        className={`pointer-events-none absolute bottom-[var(--map-bottom)] left-3 right-3 z-20 flex flex-col items-center gap-2 sm:bottom-4 sm:left-1/2 sm:right-auto sm:w-[min(460px,calc(100%-14rem))] sm:-translate-x-1/2 ${
+          detail || (narrow && (route || menuField)) ? 'hidden sm:flex' : ''
         }`}
       >
         {showHint && (

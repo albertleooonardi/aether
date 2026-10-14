@@ -224,7 +224,11 @@ const App = () => {
   const isMap = view === 'map';
 
   return (
-    <div className="relative min-h-screen bg-page transition-colors duration-300">
+    <div
+      className={`relative min-h-[100dvh] bg-page transition-colors duration-300 ${
+        isMap ? 'h-[100dvh] overflow-hidden sm:h-auto sm:overflow-visible' : ''
+      }`}
+    >
       {!isMap && <WeatherAnimations weather={weather} />}
 
       {/* Top bar. On phones the Weather / Map / Ask tabs move to a bottom tab

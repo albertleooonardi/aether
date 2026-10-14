@@ -448,8 +448,21 @@ body {
   filter: grayscale(1) invert(1) brightness(0.82) contrast(0.88);
 }
 
-/* On phones the radar timeline owns the bottom edge. */
+/* Phones: the map is full-bleed behind the floating header and tab bar, so
+ * every overlay sits between --map-top (under the header pill) and
+ * --map-bottom (above the tab bar). The radar timeline owns the bottom edge. */
 @media (max-width: 639px) {
+  .map-shell {
+    --map-top: 4.75rem;
+    --map-bottom: calc(max(0.75rem, env(safe-area-inset-bottom)) + 4.75rem);
+  }
+  .map-shell .leaflet-bottom {
+    bottom: var(--map-bottom);
+  }
+  /* Busy street maps show through glass on a small screen; go near-solid. */
+  .map-shell .panel-float {
+    background: rgb(var(--panel) / 0.97);
+  }
   .leaflet-control-scale {
     display: none;
   }
