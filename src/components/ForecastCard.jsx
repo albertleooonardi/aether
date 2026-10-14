@@ -21,7 +21,7 @@ const ForecastCard = ({ forecast }) => {
         return (
           <div
             key={idx}
-            className="grid grid-cols-[4.5rem_minmax(0,1fr)_minmax(7.5rem,10rem)] items-center gap-4 py-5 sm:grid-cols-[8rem_minmax(0,1fr)_4.5rem_minmax(12rem,18rem)] sm:gap-6"
+            className="grid grid-cols-[4.25rem_1.75rem_minmax(0,1fr)] items-center gap-3 py-4 sm:grid-cols-[8rem_minmax(0,1fr)_4.5rem_minmax(12rem,18rem)] sm:gap-6 sm:py-5"
           >
             <div>
               <div className="text-base font-semibold text-ink">
@@ -36,12 +36,14 @@ const ForecastCard = ({ forecast }) => {
               </div>
               <div className="text-xs text-ink/40">
                 {day.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                {/* Phones have no rain column, so the chance rides under the date. */}
+                <span className="tabular sm:hidden"> · {day.chanceOfRain}%</span>
               </div>
             </div>
 
             <div className="flex min-w-0 items-center gap-3">
               <span className="shrink-0">{getWeatherIcon(day.weather, 24)}</span>
-              <span className="truncate text-sm text-ink/65">{day.weather}</span>
+              <span className="hidden truncate text-sm text-ink/65 sm:inline">{day.weather}</span>
             </div>
 
             <div className="hidden items-center gap-1.5 text-sm text-ink/50 sm:flex" title="Chance of rain">

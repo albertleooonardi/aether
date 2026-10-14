@@ -110,7 +110,7 @@ const SuggestionMenu = ({ id, groups, query, activeKey, onPick, onHover, onRemov
                       e.stopPropagation();
                       onRemove(item);
                     }}
-                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-ink/40 opacity-0 transition hover:bg-ink/10 hover:text-ink focus:opacity-100 group-hover:opacity-100"
+                    className="-mr-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-ink/40 transition hover:bg-ink/10 hover:text-ink focus:opacity-100 group-hover:opacity-100 sm:opacity-0"
                   >
                     <X size={12} />
                   </button>

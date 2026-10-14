@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Sun, Moon, ArrowUpRight } from 'lucide-react';
+import { Sun, Moon, ArrowUpRight, CloudSun, Map as MapIcon, Sparkles } from 'lucide-react';
 import Logo from './components/Logo';
 import { useTheme } from './utils/useTheme';
 import MapPage from './components/map/MapPage';
@@ -33,6 +33,8 @@ const App = () => {
   const [mapMounted, setMapMounted] = useState(false);
   // A route the chatbot computed and asked to show on the map page.
   const [chatRoute, setChatRoute] = useState(null);
+  // Chat open state lives here so the phone tab bar can open it.
+  const [chatOpen, setChatOpen] = useState(false);
 
   useEffect(() => {
     if (view === 'map') setMapMounted(true);
@@ -223,68 +225,79 @@ const App = () => {
     <div className="relative min-h-screen bg-page transition-colors duration-300">
       {!isMap && <WeatherAnimations weather={weather} />}
 
-      {/* Floating pill navigation */}
+      {/* Top bar. On phones the Weather / Map / Ask tabs move to a bottom tab
+          bar (the <nav> below is fixed there); from sm up the same buttons sit in
+          the centre of this pill. One set of buttons serves both layouts. */}
       <header className="sticky top-0 z-40 px-3 pt-3 md:px-6 md:pt-4">
-        <nav className="panel-float mx-auto flex h-14 max-w-4xl items-center gap-1 rounded-full pl-4 pr-2 sm:pl-6">
-          <button
-            onClick={() => setView('weather')}
-            aria-label="Aether home"
-            className="flex items-center gap-2.5 text-ink"
-          >
-            <Logo size={18} />
-            <span className="hidden text-[13px] font-bold tracking-[0.34em] sm:inline">AETHER</span>
-          </button>
+        <div className="relative mx-auto max-w-4xl">
+          <div className="panel-float flex h-14 items-center gap-1 rounded-full pl-2 pr-2 sm:pl-3">
+            <button
+              onClick={() => setView('weather')}
+              aria-label="Aether home"
+              className="flex h-10 items-center gap-2.5 rounded-full px-3 text-ink transition hover:bg-ink/[0.05]"
+            >
+              <Logo size={18} />
+              <span className="text-[13px] font-bold tracking-[0.34em]">AETHER</span>
+            </button>
 
-          <div className="mx-auto flex items-center gap-0.5">
-            {[
-              { id: 'weather', label: 'Weather' },
-              { id: 'map', label: 'Map' },
-            ].map(({ id, label }) => (
-              <button
-                key={id}
-                onClick={() => setView(id)}
-                aria-pressed={view === id}
-                className={`relative rounded-full px-4 py-2 text-sm font-medium transition-colors ${
-                  view === id ? 'text-ink' : 'text-ink/50 hover:text-ink'
-                }`}
-              >
-                {label}
-                {view === id && (
-                  <span className="absolute bottom-0.5 left-1/2 h-1 w-1 -translate-x-1/2 rounded-full bg-butter" />
-                )}
-              </button>
-            ))}
+            <div className="flex-1" />
+
+            <button
+              onClick={toggle}
+              aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+              title={isDark ? 'Light mode' : 'Dark mode'}
+              className="flex h-10 w-10 items-center justify-center rounded-full text-ink/55 transition hover:bg-ink/[0.07] hover:text-ink"
+            >
+              {isDark ? <Sun size={16} /> : <Moon size={16} />}
+            </button>
+            <button
+              onClick={() => {
+                setView('weather');
+                getUserLocation();
+              }}
+              aria-label="Weather at my location"
+              className="btn-pill h-10 px-3.5 text-sm sm:px-4"
+            >
+              <span className="hidden sm:inline">Near me</span>
+              <ArrowUpRight size={15} />
+            </button>
           </div>
 
-          <button
-            onClick={toggle}
-            aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-            title={isDark ? 'Light mode' : 'Dark mode'}
-            className="flex h-10 w-10 items-center justify-center rounded-full text-ink/55 transition hover:bg-ink/[0.07] hover:text-ink"
-          >
-            {isDark ? <Sun size={16} /> : <Moon size={16} />}
-          </button>
-          <button
-            onClick={() => {
-              setView('weather');
-              getUserLocation();
-            }}
-            aria-label="Weather at my location"
-            className="btn-pill h-10 px-3 text-sm sm:px-4"
-          >
-            <span className="hidden sm:inline">Near me</span>
-            <ArrowUpRight size={15} />
-          </button>
-        </nav>
+          <nav aria-label="Main" className="tabbar">
+            {[
+              { id: 'weather', label: 'Weather', icon: CloudSun },
+              { id: 'map', label: 'Map', icon: MapIcon },
+            ].map(({ id, label, icon: Icon }) => (
+              <button
+                key={id}
+                onClick={() => {
+                  setView(id);
+                  setChatOpen(false);
+                }}
+                aria-pressed={view === id}
+                className={`tab ${view === id ? 'tab--active' : ''}`}
+              >
+                <Icon size={19} className="sm:hidden" aria-hidden="true" />
+                <span>{label}</span>
+              </button>
+            ))}
+            {/* Phones only: the assistant lives in the tab bar instead of a
+                floating button that covers the map's bottom sheets. */}
+            <button onClick={() => setChatOpen(true)} className={`tab sm:!hidden ${chatOpen ? 'tab--active' : ''}`}>
+              <Sparkles size={19} aria-hidden="true" />
+              <span>Ask AI</span>
+            </button>
+          </nav>
+        </div>
       </header>
 
       <main
         className={`relative z-10 mx-auto w-full ${
-          isMap ? 'max-w-[1800px] px-3 md:px-6' : 'max-w-6xl px-5 md:px-10'
+          isMap ? 'max-w-[1800px] px-3 md:px-6' : 'max-w-6xl px-5 pb-28 sm:pb-0 md:px-10'
         }`}
       >
         {mapMounted && (
-          <div className={isMap ? 'pb-4 pt-3 md:pt-4' : 'hidden'}>
+          <div className={isMap ? 'pt-3 sm:pb-4 md:pt-4' : 'hidden'}>
             <MapPage
               weather={weather}
               theme={theme}
@@ -342,6 +355,8 @@ const App = () => {
       </main>
 
       <ChatWidget
+        open={chatOpen}
+        onOpenChange={setChatOpen}
         weather={weather}
         hourly={hourly}
         forecast={forecast}

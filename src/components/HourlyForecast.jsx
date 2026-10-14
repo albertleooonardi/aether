@@ -21,7 +21,7 @@ const HourlyForecast = ({ hours }) => {
   const area = `${x(0)},100 ${points} ${x(n - 1)},100`;
 
   return (
-    <div className="no-scrollbar -mx-5 overflow-x-auto px-5 md:mx-0 md:px-0">
+    <div className="fade-x no-scrollbar -mx-5 overflow-x-auto px-5 md:mx-0 md:px-0">
       <div className="min-w-[720px]">
         <div className="relative h-36">
           <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 h-full w-full overflow-visible">

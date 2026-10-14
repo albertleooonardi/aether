@@ -209,6 +209,22 @@ const Toggle = ({ on }) => (
   </span>
 );
 
+// Phone layout (below Tailwind's sm breakpoint), tracked live so rotating or
+// resizing switches between the bottom-sheet and side-panel layouts.
+const NARROW_QUERY = '(max-width: 639px)';
+const useNarrow = () => {
+  const get = () => typeof window !== 'undefined' && !!window.matchMedia && window.matchMedia(NARROW_QUERY).matches;
+  const [narrow, setNarrow] = useState(get);
+  useEffect(() => {
+    if (!window.matchMedia) return undefined;
+    const mq = window.matchMedia(NARROW_QUERY);
+    const on = () => setNarrow(mq.matches);
+    mq.addEventListener?.('change', on);
+    return () => mq.removeEventListener?.('change', on);
+  }, []);
+  return narrow;
+};
+
 const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRouteShown, onOpenWeather }) => {
   const el = useRef(null);
   const mapRef = useRef(null);
@@ -274,6 +290,10 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
   const [chips, setChips] = useState([]); // cities with current conditions
   const [chipEls, setChipEls] = useState([]); // [key, element] for portals
   const [showHint, setShowHint] = useState(() => !hintSeen());
+  const narrow = useNarrow(); // phone layout
+  const [sheetExpanded, setSheetExpanded] = useState(false); // phone weather sheet: peek or full
+  const [formCollapsed, setFormCollapsed] = useState(false); // phone: directions form folded to one line
+  const sheetTouch = useRef(null);
 
   const setLayer = (id, on) =>
     setLayers((prev) => {
@@ -549,7 +569,8 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
     // Major cities claim space first; any chip that would overlap one already
     // placed on screen is skipped, so a zoomed-out metro area shows one reading
     // instead of a pile.
-    const placed = [];
+    // The "you are here" dot claims its spot first, so no chip sits on it.
+    const placed = myPos ? [map.latLngToContainerPoint([myPos.lat, myPos.lon])] : [];
     const inView = CITIES.filter((c) => bounds.contains([c.lat, c.lon]) && (c.tier === 1 || z >= TIER2_ZOOM))
       .sort((a, b) => a.tier - b.tier)
       .filter((c) => {
@@ -568,7 +589,7 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
       if (!controller.signal.aborted) setChips(list);
     });
     return () => controller.abort();
-  }, [ready, layers.temps, viewport]);
+  }, [ready, layers.temps, viewport, myPos]);
 
   // Keep one Leaflet marker per chip; React renders each chip's contents into
   // the marker's own element through a portal.
@@ -626,6 +647,7 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
       }).addTo(map);
     }
     setDetail({ loading: true, place, point: !place.name });
+    setSheetExpanded(false);
     try {
       const data = await fetchWeatherByCoords(place.lat, place.lon);
       const wx = toDetail(data);
@@ -833,6 +855,7 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
       setSelRoute(result.bestIndex);
       setRouteOpen(true);
       setRecents(addRecent(destLoc));
+      if (window.matchMedia?.(NARROW_QUERY).matches) setFormCollapsed(true);
       closeDetail();
     } catch (err) {
       setError(
@@ -912,6 +935,7 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
   };
 
   const clearRoute = () => {
+    setFormCollapsed(false);
     setRoute(null);
     routeLayer.current?.remove();
     routeLayer.current = null;
@@ -932,6 +956,7 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
     setRoute(initialRoute);
     setSelRoute(initialRoute.bestIndex ?? 0);
     setRouteOpen(true);
+    if (window.matchMedia?.(NARROW_QUERY).matches) setFormCollapsed(true);
   }, [initialRoute]);
 
   // Draw the current route selection; refit only when the route itself changes.
@@ -1007,10 +1032,13 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
       lastFitted.current = route;
       // Keep the route clear of the search/route panel: it sits to the left on
       // wide maps and across the top on narrow ones.
+      // Phones: the folded directions row sits on top and the route options
+      // sheet on the bottom, so leave room for both.
       const wide = map.getSize().x >= 760;
+      const phone = window.matchMedia?.(NARROW_QUERY).matches;
       map.fitBounds(L.latLngBounds(route.routes[route.bestIndex].coordinates), {
-        paddingTopLeft: wide ? [420, 60] : [30, 300],
-        paddingBottomRight: [70, 90],
+        paddingTopLeft: wide ? [420, 60] : phone ? [24, 200] : [30, 300],
+        paddingBottomRight: phone ? [70, 300] : [70, 90],
       });
     }
   }, [ready, route, selRoute, theme]); // theme: stroke ramp is per-basemap, so a flip must redraw
@@ -1109,6 +1137,7 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
   });
 
   const switchMode = (id) => {
+    setFormCollapsed(false);
     typeahead.cancel();
     originTypeahead.cancel();
     destTypeahead.cancel();
@@ -1166,160 +1195,10 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
   const showNames = !layers.labels && (viewport?.zoom ?? 0) >= NAME_ZOOM;
   const chipByName = new Map(chips.map((c) => [c.name, c]));
 
-  const menu = menuField && (menuItems.length > 0 || searching) && (
-    <div className="border-t border-ink/[0.08] p-1.5">
-      <SuggestionMenu
-        id="map-search-menu"
-        groups={menuGroups}
-        query={fieldText[menuField]}
-        activeKey={nav.activeKey}
-        onHover={nav.setActiveKey}
-        onPick={pickItem}
-        onRemove={(item) => setRecents(removeRecent(item.place))}
-        loading={searching}
-        className="max-h-[min(22rem,50vh)]"
-      />
-    </div>
-  );
-
-  const inputRow = 'flex items-center gap-2.5 rounded-2xl bg-ink/[0.05] px-3.5 transition focus-within:bg-ink/[0.08] focus-within:ring-1 focus-within:ring-ink/15';
-  const inputCls = 'w-full min-w-0 bg-transparent py-2.5 text-base text-ink placeholder-ink/40 outline-none sm:text-sm';
-
-  return (
-    <div
-      data-basemap={layers.labels ? 'street' : 'canvas'}
-      className="relative h-[calc(100dvh-6.5rem)] min-h-[520px] overflow-hidden rounded-[28px] border border-hairline md:h-[calc(100dvh-7.5rem)]"
-    >
-      <div ref={el} className="absolute inset-0 z-0" />
-
-      {/* City chips live inside Leaflet markers, rendered by React. */}
-      {chipEls.map(([key, node]) => {
-        const city = chipByName.get(key);
-        return city ? createPortal(<CityChip city={city} showName={showNames} />, node, key) : null;
-      })}
-
-      {!ready && (
-        <div className="absolute inset-0 z-10 flex items-center justify-center">
-          <Loader2 size={28} className="animate-spin text-ink/60" />
-        </div>
-      )}
-
-      {/* ---------- search / directions panel ---------- */}
-      <div ref={panelRef} className="absolute left-3 top-3 z-30 w-[min(380px,calc(100%-4.5rem))] sm:w-[min(380px,calc(100%-1.5rem))]">
-        <div className="panel-float overflow-hidden rounded-[22px]">
-          {/* mode switch */}
-          <div className="p-2 pb-0">
-            <div className="flex rounded-full bg-ink/[0.05] p-1">
-              {[
-                { id: 'explore', label: 'Explore', icon: Search },
-                { id: 'directions', label: 'Directions', icon: Navigation },
-              ].map(({ id, label, icon: Icon }) => (
-                <button
-                  key={id}
-                  onClick={() => switchMode(id)}
-                  aria-pressed={mode === id}
-                  className={`flex flex-1 items-center justify-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition ${
-                    mode === id ? 'bg-panel text-ink shadow-sm ring-1 ring-ink/10' : 'text-ink/50 hover:text-ink'
-                  }`}
-                >
-                  <Icon size={13} /> {label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {mode === 'explore' ? (
-            <form onSubmit={handleExplore} className="p-2">
-              <div className={inputRow}>
-                {busy ? (
-                  <Loader2 size={15} className="shrink-0 animate-spin text-ink/50" />
-                ) : (
-                  <Search size={15} className="shrink-0 text-ink/45" />
-                )}
-                <input
-                  ref={exploreInput}
-                  value={q}
-                  onChange={handleQueryChange}
-                  placeholder="Search places or paste a Maps link"
-                  aria-label="Search places"
-                  className={inputCls}
-                  {...fieldProps('explore')}
-                />
-                {q ? (
-                  <button
-                    type="button"
-                    aria-label="Clear search"
-                    onClick={() => {
-                      setQ('');
-                      setCands(null);
-                      typeahead.cancel();
-                      setSearching(false);
-                      exploreInput.current?.focus();
-                    }}
-                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-ink/45 hover:bg-ink/10 hover:text-ink"
-                  >
-                    <X size={13} />
-                  </button>
-                ) : (
-                  <kbd className="hidden shrink-0 rounded-md border border-ink/15 px-1.5 text-[10px] font-medium text-ink/40 sm:block">
-                    /
-                  </kbd>
-                )}
-              </div>
-            </form>
-          ) : (
-            <form onSubmit={handleDirections} className="p-2">
-              <div className="relative space-y-1.5 pr-10">
-                <div className={inputRow}>
-                  <span className="h-2.5 w-2.5 shrink-0 rounded-full border-2 border-sky-300" />
-                  <input
-                    ref={originInput}
-                    value={originText}
-                    onChange={handleOriginChange}
-                    placeholder={myPos ? 'From your location' : weather ? `From ${weather.city}` : 'Choose a starting point'}
-                    aria-label="Starting point"
-                    className={inputCls}
-                    {...fieldProps('origin')}
-                  />
-                  {locating && <Loader2 size={13} className="shrink-0 animate-spin text-ink/50" />}
-                </div>
-                <div className={inputRow}>
-                  <Flag size={12} className="shrink-0 text-orange-300" />
-                  <input
-                    ref={destInput}
-                    value={destText}
-                    onChange={handleDestChange}
-                    placeholder="Where to? (or a Maps link)"
-                    aria-label="Destination"
-                    className={inputCls}
-                    {...fieldProps('dest')}
-                  />
-                </div>
-                <button
-                  type="button"
-                  onClick={swapEnds}
-                  aria-label="Swap start and destination"
-                  title="Swap"
-                  className="absolute right-0 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full text-ink/55 transition hover:bg-ink/[0.08] hover:text-ink"
-                >
-                  <ArrowUpDown size={15} />
-                </button>
-              </div>
-              <button type="submit" disabled={busy} className="btn-pill mt-2 h-10 w-full justify-center text-sm disabled:opacity-60">
-                {busy ? <Loader2 size={15} className="animate-spin" /> : <Navigation size={14} />}
-                {busy ? 'Checking the roads…' : 'Get route with rain check'}
-              </button>
-            </form>
-          )}
-
-          {error && <p className="px-4 pb-3 text-xs leading-relaxed text-amber-300/90">{error}</p>}
-
-          {menu}
-        </div>
-
-        {/* route options — like Google Maps' alternatives list */}
-        {route && (
-          <div className="panel-float mt-2 overflow-hidden rounded-[22px]">
+  // Route options, rendered under the search panel on desktop and as a bottom
+  // sheet on phones (see the two placements in the JSX).
+  const routePanel = route && (
+          <div className={`panel-float overflow-hidden rounded-[22px] ${narrow ? '' : 'mt-2'}`}>
             <div className="flex items-center gap-2 px-4 py-3 text-xs text-ink/70">
               <span className="h-2 w-2 shrink-0 rounded-full bg-sky-300" />
               <span className="truncate">{route.origin.name}</span>
@@ -1329,14 +1208,14 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
               <button
                 onClick={() => setRouteOpen((o) => !o)}
                 aria-label={routeOpen ? 'Collapse route options' : 'Expand route options'}
-                className="ml-auto flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-ink/50 hover:bg-ink/10 hover:text-ink"
+                className="ml-auto flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-ink/50 hover:bg-ink/10 hover:text-ink"
               >
                 <ChevronDown size={14} className={`transition-transform ${routeOpen ? '' : '-rotate-90'}`} />
               </button>
               <button
                 onClick={clearRoute}
                 aria-label="Clear route"
-                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-ink/50 hover:bg-ink/10 hover:text-ink"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-ink/50 hover:bg-ink/10 hover:text-ink"
               >
                 <X size={14} />
               </button>
@@ -1400,7 +1279,7 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
                   </div>
                   {shown?.arriveAt && (
                     <p className="text-[10px] text-ink/40">
-                      Leaving now, arriving ~{fmtClock(shown.arriveAt)}. Hover the road for rain at each stretch.
+                      Leaving now, arriving ~{fmtClock(shown.arriveAt)}. {narrow ? 'Tap' : 'Hover'} the road for rain at each stretch.
                       Times exclude live traffic.
                     </p>
                   )}
@@ -1408,11 +1287,190 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
               </div>
             )}
           </div>
-        )}
+        
+  );
+
+  const menu = menuField && (menuItems.length > 0 || searching) && (
+    <div className="border-t border-ink/[0.08] p-1.5">
+      <SuggestionMenu
+        id="map-search-menu"
+        groups={menuGroups}
+        query={fieldText[menuField]}
+        activeKey={nav.activeKey}
+        onHover={nav.setActiveKey}
+        onPick={pickItem}
+        onRemove={(item) => setRecents(removeRecent(item.place))}
+        loading={searching}
+        className="max-h-[min(22rem,50vh)]"
+      />
+    </div>
+  );
+
+  const inputRow = 'flex items-center gap-2.5 rounded-2xl bg-ink/[0.05] px-3.5 transition focus-within:bg-ink/[0.08] focus-within:ring-1 focus-within:ring-ink/15';
+  const inputCls = 'w-full min-w-0 bg-transparent py-2.5 text-base text-ink placeholder-ink/40 outline-none sm:text-sm';
+
+  return (
+    <div
+      data-basemap={layers.labels ? 'street' : 'canvas'}
+      className="relative h-[calc(100dvh-10.5rem-env(safe-area-inset-bottom))] min-h-[420px] overflow-hidden rounded-[24px] border border-hairline sm:h-[calc(100dvh-6.5rem)] sm:min-h-[520px] sm:rounded-[28px] md:h-[calc(100dvh-7.5rem)]"
+    >
+      <div ref={el} className="absolute inset-0 z-0" />
+
+      {/* City chips live inside Leaflet markers, rendered by React. */}
+      {chipEls.map(([key, node]) => {
+        const city = chipByName.get(key);
+        return city ? createPortal(<CityChip city={city} showName={showNames} />, node, key) : null;
+      })}
+
+      {!ready && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center">
+          <Loader2 size={28} className="animate-spin text-ink/60" />
+        </div>
+      )}
+
+      {/* ---------- search / directions panel ---------- */}
+      <div ref={panelRef} className="absolute left-3 top-3 z-30 w-[min(380px,calc(100%-4.5rem))] sm:w-[min(380px,calc(100%-1.5rem))]">
+        <div className="panel-float overflow-hidden rounded-[22px]">
+          {/* mode switch */}
+          <div className="p-2 pb-0">
+            <div className="flex rounded-full bg-ink/[0.05] p-1">
+              {[
+                { id: 'explore', label: 'Explore', icon: Search },
+                { id: 'directions', label: 'Directions', icon: Navigation },
+              ].map(({ id, label, icon: Icon }) => (
+                <button
+                  key={id}
+                  onClick={() => switchMode(id)}
+                  aria-pressed={mode === id}
+                  className={`flex flex-1 items-center justify-center gap-1.5 rounded-full px-3 py-2 text-[13px] font-semibold transition sm:text-xs ${
+                    mode === id ? 'bg-panel text-ink shadow-sm ring-1 ring-ink/10' : 'text-ink/50 hover:text-ink'
+                  }`}
+                >
+                  <Icon size={13} /> {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {mode === 'explore' ? (
+            <form onSubmit={handleExplore} className="p-2">
+              <div className={inputRow}>
+                {busy ? (
+                  <Loader2 size={15} className="shrink-0 animate-spin text-ink/50" />
+                ) : (
+                  <Search size={15} className="shrink-0 text-ink/45" />
+                )}
+                <input
+                  ref={exploreInput}
+                  value={q}
+                  onChange={handleQueryChange}
+                  placeholder={narrow ? 'Search places' : 'Search places or paste a Maps link'}
+                  aria-label="Search places"
+                  className={inputCls}
+                  {...fieldProps('explore')}
+                />
+                {q ? (
+                  <button
+                    type="button"
+                    aria-label="Clear search"
+                    onClick={() => {
+                      setQ('');
+                      setCands(null);
+                      typeahead.cancel();
+                      setSearching(false);
+                      exploreInput.current?.focus();
+                    }}
+                    className="-mr-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-ink/45 hover:bg-ink/10 hover:text-ink"
+                  >
+                    <X size={14} />
+                  </button>
+                ) : (
+                  <kbd className="hidden shrink-0 rounded-md border border-ink/15 px-1.5 text-[10px] font-medium text-ink/40 sm:block">
+                    /
+                  </kbd>
+                )}
+              </div>
+            </form>
+          ) : narrow && formCollapsed && route ? (
+            <button
+              type="button"
+              onClick={() => {
+                setFormCollapsed(false);
+                setTimeout(() => destInput.current?.focus(), 0);
+              }}
+              aria-label="Edit route"
+              className="flex w-full min-w-0 items-center gap-2 px-4 py-3 text-left text-sm"
+            >
+              <span className="h-2 w-2 shrink-0 rounded-full bg-sky-300" />
+              <span className="min-w-0 truncate text-ink/70">{route.origin.name}</span>
+              <span className="shrink-0 text-ink/30">to</span>
+              <span className="h-2 w-2 shrink-0 rounded-full bg-orange-300" />
+              <span className="min-w-0 flex-1 truncate font-medium text-ink">{route.dest.name}</span>
+              <span className="shrink-0 rounded-full bg-ink/[0.07] px-2.5 py-1 text-xs font-medium text-ink/70">Edit</span>
+            </button>
+          ) : (
+            <form onSubmit={handleDirections} className="p-2">
+              <div className="relative space-y-1.5 pr-10">
+                <div className={inputRow}>
+                  <span className="h-2.5 w-2.5 shrink-0 rounded-full border-2 border-sky-300" />
+                  <input
+                    ref={originInput}
+                    value={originText}
+                    onChange={handleOriginChange}
+                    placeholder={myPos ? 'From your location' : weather ? `From ${weather.city}` : 'Choose a starting point'}
+                    aria-label="Starting point"
+                    className={inputCls}
+                    {...fieldProps('origin')}
+                  />
+                  {locating && <Loader2 size={13} className="shrink-0 animate-spin text-ink/50" />}
+                </div>
+                <div className={inputRow}>
+                  <Flag size={12} className="shrink-0 text-orange-300" />
+                  <input
+                    ref={destInput}
+                    value={destText}
+                    onChange={handleDestChange}
+                    placeholder="Where to? (or a Maps link)"
+                    aria-label="Destination"
+                    className={inputCls}
+                    {...fieldProps('dest')}
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={swapEnds}
+                  aria-label="Swap start and destination"
+                  title="Swap"
+                  className="absolute right-0 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full text-ink/55 transition hover:bg-ink/[0.08] hover:text-ink"
+                >
+                  <ArrowUpDown size={15} />
+                </button>
+              </div>
+              <button type="submit" disabled={busy} className="btn-pill mt-2 h-11 w-full justify-center text-sm disabled:opacity-60 sm:h-10">
+                {busy ? <Loader2 size={15} className="animate-spin" /> : <Navigation size={14} />}
+                {busy ? 'Checking the roads…' : 'Get route with rain check'}
+              </button>
+            </form>
+          )}
+
+          {error && <p className="px-4 pb-3 text-xs leading-relaxed text-amber-300/90">{error}</p>}
+
+          {menu}
+        </div>
+
+        {/* Desktop: route options sit under the search panel. */}
+        {!narrow && routePanel}
       </div>
 
+      {/* Phones: route options as a bottom sheet, clear of the search panel. */}
+      {narrow && route && !detail && (
+        <div className="absolute inset-x-2 bottom-2 z-30 max-h-[46%] overflow-y-auto rounded-[22px] thin-scroll animate-fade-in-up">
+          {routePanel}
+        </div>
+      )}
+
       {/* ---------- map controls ---------- */}
-      <div className="absolute right-3 top-3 z-20 flex flex-col items-end gap-2">
+      <div className="absolute right-3 top-3 z-[35] flex flex-col items-end gap-2">
         <div className="panel-float flex flex-col overflow-hidden rounded-2xl">
           <button onClick={() => zoomBy(1)} aria-label="Zoom in" title="Zoom in" className="map-btn">
             <Plus size={17} />
@@ -1443,7 +1501,7 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
           </div>
 
           {layersOpen && (
-            <div className="panel-float absolute right-12 top-0 z-30 w-64 rounded-2xl p-1.5 animate-fade-in">
+            <div className="panel-float absolute right-12 top-0 z-40 w-[min(16rem,calc(100vw-6rem))] rounded-2xl p-1.5 animate-fade-in">
               <div className="eyebrow px-2.5 pb-1 pt-2 !text-[10px] text-ink/40">Map layers</div>
               {[
                 { id: 'radar', icon: CloudRain, label: 'Rain radar', note: 'Last two hours, animated' },
@@ -1474,8 +1532,34 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
 
       {/* ---------- weather detail panel ---------- */}
       {detail && (
-        <div className="absolute bottom-0 left-0 right-0 z-30 animate-fade-in-up sm:bottom-auto sm:left-auto sm:right-16 sm:top-3 sm:w-[21rem]">
-          <div className="panel-float max-h-[70dvh] overflow-y-auto rounded-t-[22px] p-5 thin-scroll sm:max-h-[calc(100%-1.5rem)] sm:rounded-[22px]">
+        <div className="absolute inset-x-0 bottom-0 z-[38] animate-fade-in-up sm:bottom-auto sm:left-auto sm:right-16 sm:top-3 sm:w-[21rem]">
+          <div
+            className="panel-float max-h-[calc(100dvh-15rem)] overflow-y-auto rounded-t-[22px] px-5 pb-4 pt-2 thin-scroll sm:max-h-[calc(100dvh-10rem)] sm:rounded-[22px] sm:pb-5 sm:pt-5"
+            onTouchStart={(e) => {
+              sheetTouch.current = e.touches[0].clientY;
+            }}
+            onTouchEnd={(e) => {
+              if (!narrow || sheetTouch.current == null) return;
+              const dy = e.changedTouches[0].clientY - sheetTouch.current;
+              sheetTouch.current = null;
+              // Only treat it as a sheet gesture when the sheet isn't scrolled.
+              if (e.currentTarget.scrollTop > 0) return;
+              if (dy < -40) setSheetExpanded(true);
+              else if (dy > 60) {
+                if (sheetExpanded) setSheetExpanded(false);
+                else closeDetail();
+              }
+            }}
+          >
+            {/* Phone grab handle: tap to expand or shrink, or swipe the sheet. */}
+            <button
+              type="button"
+              onClick={() => setSheetExpanded((v) => !v)}
+              aria-label={sheetExpanded ? 'Show less' : 'Show more'}
+              className="mx-auto mb-1 flex h-8 w-24 items-center justify-center sm:hidden"
+            >
+              <span className="h-1 w-10 rounded-full bg-ink/25" />
+            </button>
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <p className="eyebrow !text-[10px] text-lilac">{detail.point ? 'Near this point' : 'Place'}</p>
@@ -1487,9 +1571,9 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
               <button
                 onClick={closeDetail}
                 aria-label="Close"
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-ink/50 transition hover:bg-ink/10 hover:text-ink"
+                className="-mr-2 flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-ink/50 transition hover:bg-ink/10 hover:text-ink"
               >
-                <X size={16} />
+                <X size={18} />
               </button>
             </div>
 
@@ -1502,8 +1586,8 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
               <p className="mt-4 text-sm text-ink/60">Couldn't load weather for this spot. Try another point.</p>
             ) : (
               <>
-                <div className="mt-5 flex items-end gap-4">
-                  <div className="display tabular text-6xl text-ink">{detail.wx.temp}°</div>
+                <div className="mt-3 flex items-end gap-4 sm:mt-5">
+                  <div className="display tabular text-5xl text-ink sm:text-6xl">{detail.wx.temp}°</div>
                   <div className="pb-1.5">
                     <div className="flex items-center gap-1.5 text-sm text-ink/80">
                       {getWeatherIcon(detail.wx.cond, 18, detail.wx.isDay)}
@@ -1516,7 +1600,7 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
                   </div>
                 </div>
 
-                <div className="mt-5 grid grid-cols-3 divide-x divide-ink/10 border-y border-ink/10 py-3 text-center">
+                <div className={`mt-5 grid grid-cols-3 divide-x divide-ink/10 border-y border-ink/10 py-3 text-center ${narrow && !sheetExpanded ? 'hidden' : ''}`}>
                   {[
                     { icon: Umbrella, value: `${detail.wx.rainChance}%`, label: 'Rain' },
                     { icon: Wind, value: `${detail.wx.wind}`, label: 'km/h' },
@@ -1533,7 +1617,7 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
                 </div>
 
                 {detail.wx.hours.length > 0 && (
-                  <div className="no-scrollbar -mx-1 mt-3 flex gap-1 overflow-x-auto px-1">
+                  <div className={`no-scrollbar -mx-1 mt-3 flex gap-1 overflow-x-auto px-1 ${narrow && !sheetExpanded ? 'hidden' : ''}`}>
                     {detail.wx.hours.map((h, i) => (
                       <div key={h.time} className="flex min-w-[3.25rem] flex-col items-center gap-1 rounded-xl py-2">
                         <span className={`text-[10px] ${i === 0 ? 'font-semibold text-ink' : 'text-ink/45'}`}>
@@ -1549,20 +1633,20 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
 
                 <button
                   onClick={routeToDetail}
-                  className="btn-pill mt-4 h-10 w-full justify-center text-sm"
+                  className="btn-pill mt-4 h-11 w-full justify-center text-sm sm:h-10"
                 >
                   <Navigation size={14} /> Directions with rain check
                 </button>
                 <div className="mt-2 grid grid-cols-2 gap-2">
                   <button
                     onClick={startFromDetail}
-                    className="flex h-9 items-center justify-center gap-1.5 rounded-full border border-ink/15 text-xs font-medium text-ink/75 transition hover:bg-ink/[0.06] hover:text-ink"
+                    className="flex h-10 items-center justify-center gap-1.5 rounded-full border border-ink/15 text-xs font-medium text-ink/75 transition hover:bg-ink/[0.06] hover:text-ink sm:h-9"
                   >
                     <MapPin size={13} /> Start from here
                   </button>
                   <button
                     onClick={() => onOpenWeather?.({ name: detail.place.name, lat: detail.place.lat, lon: detail.place.lon })}
-                    className="flex h-9 items-center justify-center gap-1.5 rounded-full border border-ink/15 text-xs font-medium text-ink/75 transition hover:bg-ink/[0.06] hover:text-ink"
+                    className="flex h-10 items-center justify-center gap-1.5 rounded-full border border-ink/15 text-xs font-medium text-ink/75 transition hover:bg-ink/[0.06] hover:text-ink sm:h-9"
                   >
                     Full forecast <ArrowUpRight size={13} />
                   </button>
@@ -1571,8 +1655,11 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
             )}
 
             <button
+              type="button"
               onClick={copyCoords}
-              className="mt-4 flex w-full items-center justify-center gap-1.5 text-[11px] text-ink/40 transition hover:text-ink/70"
+              className={`mt-4 flex w-full items-center justify-center gap-1.5 text-[11px] text-ink/40 transition hover:text-ink/70 ${
+                narrow && !sheetExpanded ? 'hidden' : ''
+              }`}
               title="Copy coordinates"
             >
               {copied ? <Check size={11} /> : <Copy size={11} />}
@@ -1587,8 +1674,8 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
 
       {/* ---------- first-use hint + radar timeline ---------- */}
       <div
-        className={`pointer-events-none absolute bottom-4 left-3 right-20 z-20 flex flex-col items-center gap-2 sm:left-1/2 sm:right-auto sm:w-[min(460px,calc(100%-14rem))] sm:-translate-x-1/2 ${
-          detail ? 'hidden sm:flex' : ''
+        className={`pointer-events-none absolute bottom-3 left-3 right-3 z-20 flex flex-col items-center gap-2 sm:bottom-4 sm:left-1/2 sm:right-auto sm:w-[min(460px,calc(100%-14rem))] sm:-translate-x-1/2 ${
+          detail || (narrow && route) ? 'hidden sm:flex' : ''
         }`}
       >
         {showHint && (
@@ -1605,7 +1692,7 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
                 }
               }}
               aria-label="Dismiss hint"
-              className="flex h-5 w-5 items-center justify-center rounded-full text-ink/45 hover:bg-ink/10 hover:text-ink"
+              className="-my-1 flex h-8 w-8 items-center justify-center rounded-full text-ink/45 hover:bg-ink/10 hover:text-ink"
             >
               <X size={11} />
             </button>
@@ -1620,7 +1707,7 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
                 setPlaying((p) => !p);
               }}
               aria-label={playing ? 'Pause radar' : 'Play radar'}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent text-accentFg transition active:scale-95"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent text-accentFg transition active:scale-95"
             >
               {playing ? <Pause size={13} fill="currentColor" /> : <Play size={13} fill="currentColor" className="translate-x-px" />}
             </button>

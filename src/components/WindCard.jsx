@@ -5,7 +5,7 @@ import { Cell, Value } from './DetailCell';
 // Dial, labels and hub are drawn in `ink` (via currentColor) so the compass
 // inverts with the theme instead of vanishing into a light page.
 const Compass = ({ degree = 0 }) => (
-  <svg viewBox="0 0 100 100" className="h-20 w-20 shrink-0 text-ink" aria-hidden="true">
+  <svg viewBox="0 0 100 100" className="h-12 w-12 shrink-0 text-ink sm:h-20 sm:w-20" aria-hidden="true">
     <circle cx="50" cy="50" r="46" fill="none" stroke="currentColor" strokeOpacity="0.14" strokeWidth="1.5" />
     {Array.from({ length: 36 }).map((_, i) => (
       <line
@@ -43,7 +43,7 @@ const WindCard = ({ weather }) => {
   const gust = Math.round(weather.gust ?? weather.wind);
   return (
     <Cell icon={Wind} label="Wind" note={`Gusts up to ${gust} km/h, from the ${weather.windDir}.`}>
-      <div className="flex items-center justify-between gap-4">
+      <div className="flex items-center justify-between gap-2 sm:gap-4">
         <Value value={Math.round(weather.wind)} unit="km/h" />
         <Compass degree={weather.windDegree ?? 0} />
       </div>

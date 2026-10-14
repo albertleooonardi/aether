@@ -32,7 +32,7 @@ const UVCard = ({ weather }) => {
   return (
     <Cell icon={Sun} label="UV index" note={note}>
       <Value value={Math.round(current)} unit={uvLabel(current)} />
-      <div className="relative mt-6">
+      <div className="relative mt-4 sm:mt-6">
         <div
           className="h-1 rounded-full"
           style={{ background: 'linear-gradient(90deg,#4ade80,#a3e635,#facc15,#fb923c,#f87171,#c084fc)' }}

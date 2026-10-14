@@ -39,7 +39,7 @@ const SunCell = ({ weather }) => {
 
   return (
     <Cell icon={Sunrise} label="Sun" note={note}>
-      <svg viewBox="0 0 100 56" className="h-20 w-full max-w-[13rem] text-ink" aria-hidden="true">
+      <svg viewBox="0 0 100 56" className="h-14 w-full max-w-[13rem] text-ink sm:h-20" aria-hidden="true">
         <line x1="4" y1="50" x2="96" y2="50" stroke="currentColor" strokeOpacity="0.15" strokeWidth="0.75" />
         <path d={`M 10 50 A ${R} ${R} 0 0 1 90 50`} fill="none" stroke="currentColor" strokeOpacity="0.18" strokeWidth="1" strokeDasharray="2 2.5" />
         {up && (
@@ -53,7 +53,7 @@ const SunCell = ({ weather }) => {
         )}
         {up && <circle cx={sx} cy={sy} r="3.5" fill="rgb(var(--butter))" />}
       </svg>
-      <div className="mt-3 flex justify-between gap-4 text-sm">
+      <div className="mt-2 flex justify-between gap-2 text-xs sm:mt-3 sm:gap-4 sm:text-sm">
         <div>
           <div className="text-ink/40 text-xs">Sunrise</div>
           <div className="tabular font-semibold text-ink">{weather.sunrise || '—'}</div>
@@ -78,7 +78,7 @@ const AirCell = ({ weather }) => {
     >
       <div className="flex items-center gap-2.5">
         <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${aq.dot}`} />
-        <span className="display text-3xl text-ink">{aq.label}</span>
+        <span className="display text-2xl text-ink sm:text-3xl">{aq.label}</span>
       </div>
       <div className="mt-6 grid grid-cols-6 gap-1">
         {[1, 2, 3, 4, 5, 6].map((n) => (
@@ -100,7 +100,7 @@ const pressureNote = (p) => {
  * with a value, a small visual, and a sentence on what it means.
  */
 const DetailsGrid = ({ weather }) => (
-  <div className="grid gap-px overflow-hidden rounded-3xl border border-hairline bg-hairline sm:grid-cols-2 lg:grid-cols-3">
+  <div className="grid grid-cols-2 gap-px overflow-hidden rounded-3xl border border-hairline bg-hairline lg:grid-cols-3">
     <UVCard weather={weather} />
     <WindCard weather={weather} />
     <SunCell weather={weather} />
@@ -131,7 +131,10 @@ const DetailsGrid = ({ weather }) => (
       <Meter pct={((Math.min(Math.max(weather.pressure, 960), 1050) - 960) / 90) * 100} />
     </Cell>
 
+    {/* Nine cells: on the 2-column phone grid the last one spans the row so no
+        empty cell is left showing the hairline background. */}
     <Cell
+      className="col-span-2 lg:col-span-1"
       icon={Cloudy}
       label="Cloud cover"
       note={weather.cloud > 75 ? 'Mostly overcast.' : weather.cloud > 35 ? 'Some cloud about.' : 'Mostly open sky.'}

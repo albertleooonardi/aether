@@ -149,8 +149,20 @@ const STATUS_NOTE = {
     "Can't reach the assistant backend — on Vercel the /api function may not be deployed. Replies use the built-in rules meanwhile.",
 };
 
-const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
-  const [open, setOpen] = useState(false);
+const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute, open: openProp, onOpenChange }) => {
+  // Controlled when the app passes `open` (the phone tab bar opens the chat);
+  // otherwise the widget keeps its own state.
+  const [openState, setOpenState] = useState(false);
+  const controlled = typeof openProp === 'boolean';
+  const open = controlled ? openProp : openState;
+  const setOpen = useCallback(
+    (next) => {
+      const value = typeof next === 'function' ? next(open) : next;
+      if (!controlled) setOpenState(value);
+      onOpenChange?.(value);
+    },
+    [controlled, open, onOpenChange]
+  );
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [messages, setMessages] = useState(() => {
@@ -708,9 +720,9 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute }) => {
         aria-label={open ? 'Close assistant' : 'Open assistant'}
         // On phones the open chat covers the whole screen (closing moves to the
         // header ✕), so the floating toggle hides; from sm up it stays.
-        className={`${
-          open ? 'hidden sm:flex' : 'flex'
-        } fixed bottom-5 right-5 z-50 mb-[env(safe-area-inset-bottom)] h-12 w-12 items-center justify-center rounded-full bg-accent text-accentFg shadow-xl transition-transform hover:scale-105 active:scale-95`}
+        // Phones open the chat from the tab bar, so the floating button is
+        // only for sm and up — on a phone it covered the map's bottom sheets.
+        className={`hidden sm:flex fixed bottom-5 right-5 z-50 mb-[env(safe-area-inset-bottom)] h-12 w-12 items-center justify-center rounded-full bg-accent text-accentFg shadow-xl transition-transform hover:scale-105 active:scale-95`}
       >
         {open ? <X size={20} /> : <Sparkles size={19} />}
         {/* Liveness dot, so the backend's state is visible without opening the

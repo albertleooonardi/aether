@@ -199,6 +199,85 @@ body {
     transform: scale(0.97);
   }
 
+  /* Main tabs. Phones: a floating bottom tab bar with icon + label.
+   * sm and up: plain text tabs centred inside the top pill. */
+  .tabbar {
+    position: fixed;
+    left: 0.75rem;
+    right: 0.75rem;
+    bottom: max(0.75rem, env(safe-area-inset-bottom));
+    z-index: 40;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.25rem;
+    height: 4rem;
+    padding: 0.375rem;
+    border-radius: 9999px;
+    background: rgb(var(--panel) / 0.9);
+    border: 1px solid rgb(var(--hairline) / 0.16);
+    box-shadow: var(--shadow-pop);
+    -webkit-backdrop-filter: blur(18px) saturate(1.2);
+    backdrop-filter: blur(18px) saturate(1.2);
+  }
+  .tab {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.15rem;
+    border-radius: 9999px;
+    font-size: 11px;
+    font-weight: 600;
+    color: rgb(var(--ink) / 0.5);
+    transition: color 0.15s ease, background-color 0.15s ease;
+  }
+  .tab--active {
+    color: rgb(var(--ink));
+    background: rgb(var(--ink) / 0.08);
+  }
+  @media (min-width: 640px) {
+    .tabbar {
+      position: absolute;
+      left: 50%;
+      right: auto;
+      top: 50%;
+      bottom: auto;
+      transform: translate(-50%, -50%);
+      display: flex;
+      height: auto;
+      padding: 0;
+      background: none;
+      border: 0;
+      box-shadow: none;
+      -webkit-backdrop-filter: none;
+      backdrop-filter: none;
+    }
+    .tab {
+      flex-direction: row;
+      padding: 0.5rem 1rem;
+      font-size: 0.875rem;
+      font-weight: 500;
+    }
+    .tab:hover {
+      color: rgb(var(--ink));
+    }
+    .tab--active {
+      background: none;
+    }
+    .tab--active::after {
+      content: '';
+      position: absolute;
+      bottom: 2px;
+      left: 50%;
+      width: 4px;
+      height: 4px;
+      margin-left: -2px;
+      border-radius: 9999px;
+      background: rgb(var(--butter));
+    }
+  }
+
   /* Square icon button used for map controls. */
   .map-btn {
     display: flex;
@@ -262,6 +341,15 @@ body {
   .no-scrollbar {
     -ms-overflow-style: none;
     scrollbar-width: none;
+  }
+
+  /* Horizontal scroll rows on phones: fade the clipped edge so it reads as
+   * "more this way" instead of a cut-off chip. */
+  @media (max-width: 767px) {
+    .fade-x {
+      -webkit-mask-image: linear-gradient(to right, #000 85%, transparent);
+      mask-image: linear-gradient(to right, #000 85%, transparent);
+    }
   }
 
   /* Thin scrollbar for menus and panels */

@@ -171,7 +171,7 @@ const SearchBar = ({ city, setCity, onSearch, onPickPlace, onLocate, loading, lo
       )}
 
       {quick.length > 0 && (
-        <div className="no-scrollbar mt-4 flex items-center gap-2 overflow-x-auto px-1 md:flex-wrap md:overflow-visible">
+        <div className="fade-x no-scrollbar mt-4 flex items-center gap-2 overflow-x-auto px-1 md:flex-wrap md:overflow-visible">
           {quick.map((item) => {
             const Icon = item.type === 'recent' ? Clock : MapPin;
             return (
@@ -179,7 +179,7 @@ const SearchBar = ({ city, setCity, onSearch, onPickPlace, onLocate, loading, lo
                 key={item.key}
                 type="button"
                 onClick={() => pick(item)}
-                className="flex shrink-0 items-center gap-1.5 rounded-full border border-hairline px-3.5 py-1.5 text-sm text-ink/65 transition hover:border-ink/30 hover:bg-ink/[0.05] hover:text-ink"
+                className="flex min-h-[2.25rem] shrink-0 items-center gap-1.5 rounded-full border border-hairline px-3.5 py-1.5 text-sm text-ink/65 transition hover:border-ink/30 hover:bg-ink/[0.05] hover:text-ink"
               >
                 <Icon size={12} className="text-ink/35" />
                 {item.title}
