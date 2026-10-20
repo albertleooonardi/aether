@@ -115,7 +115,7 @@ const SearchBar = ({ city, setCity, onSearch, onPickPlace, onLocate, loading, lo
           aria-autocomplete="list"
           autoComplete="off"
           spellCheck={false}
-          className="w-full min-w-0 bg-transparent px-1 text-lg text-ink placeholder-ink/35 outline-none md:text-xl"
+          className="h-full w-full min-w-0 bg-transparent px-1 text-lg text-ink placeholder-ink/35 outline-none md:text-xl"
         />
         {text && !loading && (
           <button

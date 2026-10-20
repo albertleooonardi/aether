@@ -368,6 +368,11 @@ body {
   background: transparent;
   cursor: pointer;
 }
+@media (pointer: coarse) {
+  .radar-range {
+    height: 32px;
+  }
+}
 .radar-range::-webkit-slider-runnable-track {
   height: 2px;
   border-radius: 2px;
@@ -564,4 +569,25 @@ body {
   0% { box-shadow: 0 0 0 0 rgba(140, 153, 172, 0.5); }
   70% { box-shadow: 0 0 0 16px rgba(140, 153, 172, 0); }
   100% { box-shadow: 0 0 0 0 rgba(140, 153, 172, 0); }
+}
+
+/* Touch screens: iOS Safari zooms the page when a field under 16px gets
+ * focus, so typing fields stay at 16px wherever a finger is the pointer. */
+@media (pointer: coarse) {
+  input:not([type='range']):not([type='checkbox']):not([type='radio']),
+  textarea:not([readonly]),
+  select:not([multiple]) {
+    font-size: 16px;
+  }
+}
+
+/* Short screens (a phone on its side): the chat takes the whole screen
+ * instead of a small floating box squeezed under the header. */
+@media (min-width: 640px) and (max-height: 520px) {
+  .chat-panel {
+    inset: 0 !important;
+    width: 100% !important;
+    height: 100dvh !important;
+    border-radius: 0 !important;
+  }
 }

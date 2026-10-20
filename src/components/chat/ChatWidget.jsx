@@ -748,7 +748,7 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute, open: op
         <div
           role="dialog"
           aria-label="AetherAI assistant"
-          className="panel-float fixed inset-0 z-50 flex h-dvh w-full flex-col overflow-hidden animate-fade-in-up sm:inset-auto sm:bottom-20 sm:right-5 sm:h-[min(600px,calc(100dvh-7rem))] sm:w-[min(400px,calc(100vw-2.5rem))] sm:rounded-[24px]"
+          className="chat-panel panel-float fixed inset-0 z-50 flex h-dvh w-full flex-col overflow-hidden animate-fade-in-up sm:inset-auto sm:bottom-20 sm:right-5 sm:h-[min(600px,calc(100dvh-7rem))] sm:w-[min(400px,calc(100vw-2.5rem))] sm:rounded-[24px]"
         >
           {/* Header */}
           <div className="flex h-12 shrink-0 items-center gap-2 border-b border-ink/[0.07] pl-4 pr-2 pt-[env(safe-area-inset-top)] sm:pt-0">
@@ -758,7 +758,7 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute, open: op
             <button
               onClick={probe}
               title={`${meta.label} · check connection`}
-              className="flex min-w-0 items-center gap-1.5 rounded-full px-1.5 py-0.5 text-[11px] text-ink/45 transition hover:bg-ink/[0.06]"
+              className="flex h-8 min-w-0 items-center gap-1.5 rounded-full px-2 text-[11px] text-ink/45 transition hover:bg-ink/[0.06]"
             >
               <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${meta.dot} ${meta.pulse ? 'animate-pulse' : ''}`} />
               <span className="truncate">
