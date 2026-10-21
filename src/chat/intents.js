@@ -182,8 +182,21 @@ const placeAfter = (text) => {
 };
 
 // "weather in Surabaya", "will it rain in Tokyo", "what is the temp of Pontianak"
+// "Where is it raining in Java?", "which cities are sunny?" ask for a survey of
+// many places, not one place's card. Read as weather-in, "Java" was geocoded to
+// Javanrud, Iran. These belong to the AI, which checks several cities at once.
+const OVERVIEW =
+  /\b(?:where(?:'s|\s+is|\s+are|\s+will)?\b[^?]*\b(?:rain(?:ing|y)?|sunny|storm(?:s|y|ing)?|snow(?:ing)?|hot|cold|dry)|which\s+(?:cities|places|areas|towns|regions|parts)|(?:rainy|sunny|stormy|dry)\s+(?:places|cities|areas|towns|regions)|list\b)/i;
+
+// The weather-in card shows conditions NOW. "Will it rain in Bandung tomorrow?"
+// got today's card; a question about another time belongs to the AI, which
+// answers from the hourly and daily forecast.
+const LATER =
+  /\b(?:tomorrow|tonight|later|weekend|next\s+\w+|this\s+(?:morning|afternoon|evening|week)|(?:on\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|in\s+\d+\s*(?:hours?|hrs?|days?)|besok|nanti|lusa)\b/i;
+
 export const parseWeatherIn = (text) => {
   const t = text.toLowerCase();
+  if (OVERVIEW.test(t) || LATER.test(t)) return null;
   // \bhumid\b never matches "humidity", so "humidity of Pontianak" used to fall
   // through and get answered with the current city's number. Match inflections.
   // "how is it in Medan right now?" asks about the weather without naming any

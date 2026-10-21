@@ -22,9 +22,37 @@ const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
 // always answer 429 — it was measured holding the socket open past the full 30s
 // timeout, on every call. Lite draws on a separate quota bucket and answered in
 // ~1s under the same key. Override with GEMINI_MODEL on a paid tier.
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-flash-lite-latest';
+//
+// GEMINI_MODEL may list several ids, comma-separated, tried in order. The
+// "-latest" aliases are shared, heavily loaded pools: measured, lite-latest hung
+// for 20s+ and answered 503 "high demand" for long stretches while a pinned model
+// on the same key answered in ~4s. A model that hangs or is overloaded is skipped
+// for a short while and the next one answers instead.
+const GEMINI_MODELS = (process.env.GEMINI_MODEL || 'gemini-flash-lite-latest,gemini-3-flash-preview,gemini-3.5-flash')
+  .split(',')
+  .map((m) => m.trim())
+  .filter(Boolean);
+const GEMINI_MODEL = GEMINI_MODELS[0];
 const GROQ_KEY = process.env.GROQ_API_KEY || '';
-const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
+// Groq rate-limits per MODEL (8K tokens/min each on the free tier) and a chat
+// turn with a tool lookup spends ~7K, so one model manages about one lookup a
+// minute. GROQ_MODEL may list several, comma-separated; the tool-capable free
+// models below are appended as overflow, each with its own allowance. An id the
+// account lacks just 404s and is skipped.
+const GROQ_FALLBACKS = (process.env.GROQ_FALLBACK_MODELS ?? 'openai/gpt-oss-120b,openai/gpt-oss-20b,qwen/qwen3.8-27b')
+  .split(',')
+  .map((m) => m.trim())
+  .filter(Boolean);
+const GROQ_MODELS = [
+  ...new Set([
+    ...(process.env.GROQ_MODEL || 'llama-3.3-70b-versatile')
+      .split(',')
+      .map((m) => m.trim())
+      .filter(Boolean),
+    ...GROQ_FALLBACKS,
+  ]),
+];
+const GROQ_MODEL = GROQ_MODELS[0];
 const WEATHER_KEY = process.env.WEATHER_API_KEY || process.env.REACT_APP_WEATHER_API_KEY || '';
 // Supabase — chat-turn logging (debugging aid for the intent parser, not
 // training data). SERVICE_KEY bypasses RLS, so it must never reach the
@@ -35,6 +63,15 @@ const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || '';
 const MAX_OUTPUT = Number(process.env.AI_MAX_OUTPUT_TOKENS || 450);
 const HISTORY_TURNS = Number(process.env.AI_HISTORY_TURNS || 6);
 const COOLDOWN_MS = Number(process.env.AI_COOLDOWN_MS || 30 * 60 * 1000);
+// A provider that hangs or is overloaded usually recovers in minutes, not the
+// half hour a spent daily quota needs.
+const SHORT_COOLDOWN_MS = Number(process.env.AI_SHORT_COOLDOWN_MS || 2 * 60 * 1000);
+// Per provider call. A healthy model answers a step in 1–5s; waiting 30s on a
+// hung one (the old value) made the first message of a session feel broken.
+const PROVIDER_TIMEOUT_MS = Number(process.env.AI_PROVIDER_TIMEOUT_MS || 10000);
+// When every provider is cooling down but one frees up this soon, wait for it
+// rather than answer with the generic built-in reply.
+const MAX_WAIT_FOR_PROVIDER_MS = 12000; // stays inside Vercel's 30s function limit
 const GEMINI_BUDGET = Number(process.env.GEMINI_TOKEN_BUDGET || 0);
 const THINKING_BUDGET = Number(process.env.GEMINI_THINKING_BUDGET || 0);
 const GROQ_BUDGET = Number(process.env.GROQ_TOKEN_BUDGET || 0);
@@ -83,7 +120,9 @@ TOOLS — you can call these for live data; prefer them over guessing or deflect
   away, and the app draws the route map from whatever this resolves to.
 
 Rules:
-- Be concise, warm and practical: prose in 1–3 short sentences. NEVER write labelled
+- Reply in the language the user wrote in.
+- Be concise, warm and practical: prose in 1–3 short sentences — still 3 at most
+  after using tools; lead with the answer, not a restatement. NEVER write labelled
   field lists ("Route:", "Distance:", "Driving time:", "Rain outlook:") or a
   "Bottom line:" summary — a labelled block is wrong for this app because the cards
   already present structured data. Bold at most one key fact.
@@ -104,6 +143,10 @@ Rules:
 - get_route gives you the weather at the DESTINATION only, not along the road. Say
   what you know ("it's dry in Bandung when you'd arrive"), never "you won't get wet
   on the way" — the route card beside your reply is what covers the road itself.
+- Only mention app features named in these instructions (the route card and its
+  rows, "Open in map", reminders, searching a city). Never invent buttons or
+  screens. If the route card has one option, say that's the only route found and
+  offer what you can do instead (e.g. check a later departure time).
 - A route map is drawn automatically for any routing question. NEVER tell the user
   to rephrase to get one, and never offer "a map view" as though it were extra.
 - When "displayed.route" is present, do not restate its distance, duration or
@@ -115,7 +158,9 @@ Rules:
   Use that list to answer "what did I ask you to remind me about?".
 - You may explain general weather knowledge (what UV index means, dew point comfort,
   what an AQI level implies) and tie it back to the current numbers.
-- Use **bold** sparingly: at most one key fact.`;
+- Use **bold** sparingly: at most one key fact, a short phrase of a few words
+  (e.g. **63% chance of rain**), never a whole clause.
+- Write numbers compactly: 63%, 35°C, 12 km/h — no space before % or °.`;
 
 const contextText = (context) =>
   context && context.location
@@ -378,9 +423,27 @@ const record = (p, u) => {
   x.completion += u.completion || 0;
   x.total += u.total || 0;
 };
-const markExhausted = (p, msg) => {
-  usage[p].exhaustedUntil = Date.now() + COOLDOWN_MS;
-  usage[p].lastError = msg;
+// How long to sideline after a failure. Rate limits say when to come back
+// ("Please try again in 19.01s") — honour that instead of a blanket half hour,
+// which turned one busy minute on Groq's free tier into thirty minutes of
+// canned fallback replies.
+const cooldownFor = (e) => {
+  const m = (e && e.message) || '';
+  const hint = /(?:try again|retry) in\s*([\d.]+)\s*(ms|s|sec|seconds?|m|min|minutes?)\b/i.exec(m);
+  if (hint) {
+    const n = parseFloat(hint[1]);
+    const ms = /^ms$/i.test(hint[2]) ? n : /^m/i.test(hint[2]) ? n * 60000 : n * 1000;
+    return Math.max(5000, Math.ceil(ms) + 1000);
+  }
+  const lower = m.toLowerCase();
+  if (e && e.status === 402) return COOLDOWN_MS;
+  if (/quota|exhaust|billing|insufficient|per day|daily/.test(lower)) return COOLDOWN_MS;
+  if ((e && e.status === 429) || /rate.?limit|too many|limit reached|per minute|tpm|rpm/.test(lower)) return 60000;
+  return SHORT_COOLDOWN_MS; // hangs, overload, connection failures
+};
+const markExhausted = (p, e) => {
+  usage[p].exhaustedUntil = Date.now() + cooldownFor(e);
+  usage[p].lastError = e.message;
 };
 // Reasons to SIDELINE a provider rather than retry it on the next message.
 //
@@ -399,8 +462,8 @@ const markExhausted = (p, msg) => {
 const isBenchable = (e) => {
   const s = e.status;
   const m = (e.message || '').toLowerCase();
-  if (s === 429 || s === 402) return true;
-  if (/quota|exhaust|rate.?limit|insufficient|billing|too many|out of|limit reached/.test(m)) return true;
+  if (s === 429 || s === 402 || s === 503) return true;
+  if (/quota|exhaust|rate.?limit|insufficient|billing|too many|out of|limit reached|high demand|overloaded|unavailable/.test(m)) return true;
   return /timeout|timed out|socket hang up|econnreset|econnrefused|enotfound|network|fetch failed/.test(m);
 };
 
@@ -452,7 +515,7 @@ function httpsPostJSON(hostname, reqPath, payload, headers) {
         });
       }
     );
-    req.setTimeout(30000, () => req.destroy(new Error('provider timeout')));
+    req.setTimeout(PROVIDER_TIMEOUT_MS, () => req.destroy(new Error('provider timeout')));
     req.on('error', reject);
     req.write(data);
     req.end();
@@ -477,6 +540,73 @@ async function fetchJSON(url, headers, timeoutMs = 8000) {
 }
 
 /* ---------------- provider calls (return { text, usage }) ---------------- */
+// Gemini model health: id → time it may be tried again; and the model that
+// answered last, which goes first so only one request pays to find it.
+const geminiSickUntil = {};
+let geminiLastGood = null;
+// One Gemini request, trying each configured model in turn. A model that hangs,
+// is overloaded (503) or has been retired (404) is skipped for a while; any
+// other error (a bad request, a spent key) is the provider's, and is thrown.
+// The search as a whole gets two timeouts' worth of time — room to replace one
+// hung model with the next — so a run of hung models can't hold a reply for minutes.
+// Ask one model; resolve its body on 200, reject (and mark it sick) otherwise.
+const geminiAsk = async (model, payload) => {
+  try {
+    const { status, json: body } = await httpsPostJSON(
+      'generativelanguage.googleapis.com',
+      `/v1beta/models/${model}:generateContent?key=${GEMINI_KEY}`,
+      payload
+    );
+    if (status === 200) return body;
+    const e = new Error(body && body.error ? body.error.message : `Gemini HTTP ${status}`);
+    e.status = status;
+    throw e;
+  } catch (e) {
+    if (!e.status || e.status === 503 || e.status === 404) {
+      geminiSickUntil[model] = Date.now() + (/timeout/i.test(e.message) ? 5 * SHORT_COOLDOWN_MS : SHORT_COOLDOWN_MS);
+    }
+    throw e;
+  }
+};
+
+async function geminiPost(payload) {
+  const started = Date.now();
+  const healthy = GEMINI_MODELS.filter((m) => !(geminiSickUntil[m] > started));
+  const pool = healthy.length ? healthy : GEMINI_MODELS;
+  // Nothing known to work yet (a fresh server, or the last good model just
+  // failed): ask every candidate at once and take the first answer, instead of
+  // paying a full timeout for each hung model in turn — that made the first
+  // message of a session take 20s+. Later turns go to the winner alone.
+  if (!geminiLastGood && pool.length > 1) {
+    try {
+      const winner = await Promise.any(pool.map((model) => geminiAsk(model, payload).then((body) => ({ model, body }))));
+      META.gemini.model = winner.model;
+      geminiLastGood = winner.model;
+      return winner.body;
+    } catch (agg) {
+      const errs = (agg && agg.errors) || [];
+      // A provider-level error (bad key, spent quota) outranks a sick model.
+      throw errs.find((e) => e.status && ![503, 404].includes(e.status)) || errs[0] || new Error('Gemini unavailable');
+    }
+  }
+  const tryOrder = pool.includes(geminiLastGood) ? [geminiLastGood, ...pool.filter((m) => m !== geminiLastGood)] : pool;
+  let lastErr;
+  for (const model of tryOrder) {
+    if (lastErr && Date.now() - started >= 2 * PROVIDER_TIMEOUT_MS) break;
+    try {
+      const body = await geminiAsk(model, payload);
+      META.gemini.model = model;
+      geminiLastGood = model;
+      return body;
+    } catch (e) {
+      if (e.status && e.status !== 503 && e.status !== 404) throw e;
+      lastErr = e;
+      if (geminiLastGood === model) geminiLastGood = null;
+    }
+  }
+  throw lastErr || new Error('Gemini unavailable');
+}
+
 async function callGemini(messages, context, actions) {
   const contents = trimmed(messages).map((m) => ({
     role: m.role === 'assistant' ? 'model' : 'user',
@@ -500,16 +630,7 @@ async function callGemini(messages, context, actions) {
         ...(THINKING_BUDGET > 0 ? { thinkingConfig: { thinkingBudget: THINKING_BUDGET } } : {}),
       },
     };
-    const { status, json: body } = await httpsPostJSON(
-      'generativelanguage.googleapis.com',
-      `/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_KEY}`,
-      payload
-    );
-    if (status !== 200) {
-      const e = new Error(body && body.error ? body.error.message : `Gemini HTTP ${status}`);
-      e.status = status;
-      throw e;
-    }
+    const body = await geminiPost(payload);
     const u = body.usageMetadata || {};
     used.prompt += u.promptTokenCount || 0;
     used.completion += u.candidatesTokenCount || 0;
@@ -536,6 +657,44 @@ async function callGemini(messages, context, actions) {
   throw new Error('Gemini tool loop exceeded');
 }
 
+// Groq model health, as for Gemini: id → time it may be tried again.
+const groqSickUntil = {};
+// One Groq request, trying each model in turn. A model that is rate-limited,
+// overloaded, missing or hung sits out (for as long as its error says) and the
+// next one answers; any other error is the provider's, and is thrown.
+async function groqPost(body) {
+  const started = Date.now();
+  const healthy = GROQ_MODELS.filter((m) => !(groqSickUntil[m] > started));
+  let lastErr;
+  for (const model of healthy.length ? healthy : GROQ_MODELS) {
+    if (lastErr && Date.now() - started >= 2 * PROVIDER_TIMEOUT_MS) break;
+    let res;
+    try {
+      res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${GROQ_KEY}` },
+        body: JSON.stringify({ ...body, model }),
+        signal: timeoutSignal(PROVIDER_TIMEOUT_MS),
+      });
+    } catch (e) {
+      lastErr = e.name === 'TimeoutError' || e.name === 'AbortError' ? new Error('provider timeout') : e;
+      groqSickUntil[model] = Date.now() + cooldownFor(lastErr);
+      continue;
+    }
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 200) {
+      META.groq.model = model;
+      return data;
+    }
+    const e = new Error(data && data.error ? data.error.message : `Groq HTTP ${res.status}`);
+    e.status = res.status;
+    if (![404, 429, 503].includes(res.status)) throw e;
+    lastErr = e;
+    groqSickUntil[model] = Date.now() + cooldownFor(e);
+  }
+  throw lastErr || new Error('Groq unavailable');
+}
+
 async function callGroq(messages, context, actions) {
   const msgs = [{ role: 'system', content: SYSTEM + contextText(context) }].concat(
     trimmed(messages).map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.text }))
@@ -543,25 +702,12 @@ async function callGroq(messages, context, actions) {
   const used = { prompt: 0, completion: 0, total: 0 };
 
   for (let step = 0; step <= MAX_TOOL_STEPS; step++) {
-    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${GROQ_KEY}` },
-      body: JSON.stringify({
-        model: GROQ_MODEL,
-        messages: msgs,
-        temperature: 0.6,
-        max_tokens: MAX_OUTPUT,
-        ...(step < MAX_TOOL_STEPS
-          ? { tools: TOOL_DEFS.map((t) => ({ type: 'function', function: t })) }
-          : {}),
-      }),
+    const data = await groqPost({
+      messages: msgs,
+      temperature: 0.6,
+      max_tokens: MAX_OUTPUT,
+      ...(step < MAX_TOOL_STEPS ? { tools: TOOL_DEFS.map((t) => ({ type: 'function', function: t })) } : {}),
     });
-    const data = await res.json().catch(() => ({}));
-    if (res.status !== 200) {
-      const e = new Error(data && data.error ? data.error.message : `Groq HTTP ${res.status}`);
-      e.status = res.status;
-      throw e;
-    }
     const u = data.usage || {};
     used.prompt += u.prompt_tokens || 0;
     used.completion += u.completion_tokens || 0;
@@ -573,7 +719,9 @@ async function callGroq(messages, context, actions) {
       if (!text) throw new Error('Empty response from Groq');
       return { text, usage: used };
     }
-    msgs.push(m);
+    // Only the portable fields go back: the next step may run on another model,
+    // which can reject one model's extras (e.g. a reasoning trace).
+    msgs.push({ role: 'assistant', content: m.content || '', tool_calls: m.tool_calls });
     for (const tc of m.tool_calls) {
       let args = {};
       try {
@@ -591,13 +739,27 @@ async function callGroq(messages, context, actions) {
   throw new Error('Groq tool loop exceeded');
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Models write "63 %" and "35 °C" despite the prompt; the app's own cards print
+// 63% and 35°, so normalise to match.
+const tidyReply = (text) => String(text).replace(/(\d)\s+(%|°)/g, '$1$2');
+
 async function generate(messages, context) {
   let order = ORDER.filter(available);
-  if (!order.length) order = ORDER.filter(hasKey);
   if (!order.length) {
-    const e = new Error('no_provider');
-    e.code = 'no_key';
-    throw e;
+    const keyed = ORDER.filter(hasKey);
+    if (!keyed.length) {
+      const e = new Error('no_provider');
+      e.code = 'no_key';
+      throw e;
+    }
+    // Everyone is cooling down. Try the one that frees up first — waiting a few
+    // seconds for it beats the generic built-in reply the app falls back to.
+    const soonest = keyed.slice().sort((a, b) => usage[a].exhaustedUntil - usage[b].exhaustedUntil)[0];
+    const wait = usage[soonest].exhaustedUntil - Date.now();
+    if (wait > 0 && wait <= MAX_WAIT_FOR_PROVIDER_MS) await sleep(wait);
+    order = [soonest];
   }
   let lastErr;
   for (const p of order) {
@@ -620,7 +782,7 @@ async function generate(messages, context) {
       }
       const actions = [...byKey.values()].slice(-1);
       return {
-        reply: out.text,
+        reply: tidyReply(out.text),
         provider: p,
         model: META[p].model,
         usage: snapshot(),
@@ -628,7 +790,7 @@ async function generate(messages, context) {
       };
     } catch (e) {
       lastErr = e;
-      if (isBenchable(e)) markExhausted(p, e.message);
+      if (isBenchable(e)) markExhausted(p, e);
       else usage[p].lastError = e.message;
     }
   }
@@ -969,6 +1131,8 @@ module.exports = {
   // Exported for the regression tests: both decide something the app must not
   // get wrong twice (which failures bench a provider; what counts as rain).
   isBenchable,
+  cooldownFor,
+  tidyReply,
   isRainingNow,
   healthHandler,
   usageHandler,

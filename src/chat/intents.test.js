@@ -11,7 +11,9 @@ describe('parseWeatherIn', () => {
     ['will it rain in Tokyo', 'Tokyo'],
     ['how hot is it in London', 'London'],
     ['what is the weather around Bandung', 'Bandung'],
-    ['forecast for Jakarta tomorrow', 'Jakarta'],
+    // "forecast for Jakarta tomorrow" used to parse to Jakarta and got TODAY's live
+    // card; questions about another time now go to the AI (see the LATER tests).
+    ['forecast for Jakarta', 'Jakarta'],
   ])('%j -> %j', (text, place) => {
     expect(parseWeatherIn(text)).toBe(place);
   });
@@ -271,5 +273,39 @@ describe('phrasings that used to fall through to the LLM', () => {
 
   test('"how is it going in X" is not', () => {
     expect(parseWeatherIn('how is it going in Jakarta')).toBeNull();
+  });
+});
+
+describe('survey questions are not single-place weather lookups', () => {
+  const { parseWeatherIn } = require('./intents');
+
+  test.each([
+    'Where is it raining in Java right now?',
+    "where's it raining in Indonesia",
+    'Which cities are sunny today?',
+    'show me the rainy places in West Java',
+    'list rainy cities near Jakarta',
+  ])('%s → left for the AI', (q) => {
+    expect(parseWeatherIn(q)).toBeNull();
+  });
+
+  test('a plain weather-in still parses', () => {
+    expect(parseWeatherIn('Is it raining in Bandung?')).toBe('Bandung');
+    expect(parseWeatherIn('weather in Surabaya')).toBe('Surabaya');
+  });
+});
+
+describe('a weather question about another time goes to the forecast, not the live card', () => {
+  const { parseWeatherIn } = require('./intents');
+  test.each([
+    'Will it rain in Bandung tomorrow?',
+    'weather in Surabaya this weekend',
+    'how hot will Jakarta be tonight',
+    'rain in Bogor on Saturday?',
+    'Besok hujan di Jakarta?',
+  ])('%s → left for the AI', (q) => expect(parseWeatherIn(q)).toBeNull());
+
+  test('right now is still the live card', () => {
+    expect(parseWeatherIn('Is it raining in Bandung now?')).toBe('Bandung');
   });
 });

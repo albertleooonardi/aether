@@ -213,6 +213,78 @@ describe('a hung provider is benched, not retried forever', () => {
 // which is the test RouteService documents as wrong. Live, it named Jakarta,
 // Bandung, Semarang and Denpasar as raining — all code 1063 "Patchy rain nearby",
 // which the route scorer in the same app calls dry. One app, two answers.
+describe('a rate-limited Groq model hands the turn to the next model', () => {
+  const json = (status, data) => ({ status, text: async () => JSON.stringify(data), json: async () => data });
+
+  afterEach(() => {
+    delete process.env.AI_PRIMARY;
+    delete process.env.GROQ_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+    delete process.env.GROQ_MODEL;
+    delete process.env.GROQ_FALLBACK_MODELS;
+    delete global.fetch;
+  });
+
+  test('a 429 on the first model is answered by the second, in the same request', async () => {
+    jest.resetModules();
+    process.env.AI_PRIMARY = 'groq';
+    process.env.GROQ_API_KEY = 'groq-test';
+    process.env.GEMINI_API_KEY = '';
+    process.env.GROQ_MODEL = 'model-a';
+    process.env.GROQ_FALLBACK_MODELS = 'model-b';
+    const asked = [];
+    global.fetch = jest.fn(async (url, init) => {
+      const model = JSON.parse(init.body).model;
+      asked.push(model);
+      if (model === 'model-a') {
+        return json(429, { error: { message: 'Rate limit reached on tokens per minute (TPM). Please try again in 19.0125s.' } });
+      }
+      return json(200, { choices: [{ message: { content: 'Dry all afternoon.' } }], usage: { total_tokens: 5 } });
+    });
+    const { chatHandler } = require('../../api/_lib/core');
+    const res = await chatHandler({ messages: [{ role: 'user', text: 'rain later?' }], context: null });
+    expect(res.body.reply).toBe('Dry all afternoon.');
+    expect(res.body.model).toBe('model-b');
+    expect(asked).toEqual(['model-a', 'model-b']);
+
+    // The limited model sits out its 19s, so the next turn goes straight to model-b.
+    asked.length = 0;
+    await chatHandler({ messages: [{ role: 'user', text: 'and tonight?' }], context: null });
+    expect(asked).toEqual(['model-b']);
+  });
+});
+
+describe('a benched provider comes back when the error says it can', () => {
+  const { cooldownFor, isBenchable } = require('../../api/_lib/core');
+  const err = (message, status) => Object.assign(new Error(message), status ? { status } : {});
+
+  test("a per-minute rate limit honours the provider's own retry hint", () => {
+    const groq =
+      'Rate limit reached for model `openai/gpt-oss-120b` on tokens per minute (TPM): Limit 8000, Used 6368, Requested 4167. Please try again in 19.0125s.';
+    expect(cooldownFor(err(groq, 429))).toBe(20013);
+    expect(cooldownFor(err('Please retry in 450ms', 429))).toBe(5000); // floor
+    expect(cooldownFor(err('try again in 2m', 429))).toBe(121000);
+  });
+
+  test('a 429 with no hint is a minute, not half an hour', () => {
+    expect(cooldownFor(err('Too many requests', 429))).toBe(60000);
+  });
+
+  test('a spent daily quota still sidelines for the long cooldown', () => {
+    expect(cooldownFor(err('You exceeded your current quota', 429))).toBe(30 * 60 * 1000);
+    expect(cooldownFor(err('payment required', 402))).toBe(30 * 60 * 1000);
+  });
+
+  test('a hang or an overloaded model is a short pause', () => {
+    expect(cooldownFor(err('provider timeout'))).toBe(2 * 60 * 1000);
+    expect(cooldownFor(err('This model is currently experiencing high demand.', 503))).toBe(2 * 60 * 1000);
+  });
+
+  test('an overloaded provider (503) is benched rather than retried every turn', () => {
+    expect(isBenchable(err('This model is currently experiencing high demand.', 503))).toBe(true);
+  });
+});
+
 describe('rain overview agrees with the route scorer', () => {
   const { isRainingNow } = require('../../api/_lib/core');
   const at = (code, precip_mm, text) => ({ condition: { code, text }, precip_mm });

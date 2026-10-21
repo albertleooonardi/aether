@@ -67,6 +67,27 @@ export const parseReminder = (text) => {
 export const formatClock = (epoch) =>
   new Date(epoch).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 
+// "today at 5:00 PM" / "tomorrow at 5:00 PM" — a reminder set at 9 PM "for 5pm"
+// lands tomorrow, and a bare clock time reads as though it already passed.
+export const formatWhen = (epoch, now = Date.now()) => {
+  const day = (t) => new Date(t).toDateString();
+  const clock = formatClock(epoch);
+  if (day(epoch) === day(now)) return `today at ${clock}`;
+  if (day(epoch) === day(now + 86400000)) return `tomorrow at ${clock}`;
+  return `${new Date(epoch).toLocaleDateString('en-US', { weekday: 'long' })} at ${clock}`;
+};
+
+// The line above a weather card. The card already shows the place, condition and
+// numbers, so this carries the one thing worth acting on instead of repeating it.
+export const weatherLead = (c) => {
+  const rain = c.chanceOfRain ?? 0;
+  if (rain >= 60) return `Take an umbrella in **${c.name}** — ${rain}% chance of rain today.`;
+  if (rain >= 30) return `Rain is possible in **${c.name}** today (${rain}%), so a compact umbrella is worth carrying.`;
+  if (c.high >= 33) return `A hot one in **${c.name}**, up to ${c.high}° today. Dress light and stay hydrated.`;
+  if (c.high <= 10) return `Cold in **${c.name}**, ${c.low}° to ${c.high}° today. Wear warm layers.`;
+  return `Comfortable in **${c.name}** today, ${c.low}° to ${c.high}° with little chance of rain.`;
+};
+
 // The one-line prose for a route reply. The card already shows endpoints,
 // distance, duration, rain status and arrival, so this carries only the verdict.
 // The destination name stays because stripExtras drops the card when the
@@ -94,6 +115,23 @@ const hourLabel = (time) => {
 // Deterministic answer for weather questions + reminder listing. `hourly` and
 // `forecast` are the same arrays the app's own cards render, so "later" and
 // "tomorrow" are answered from real data instead of today's daily number.
+export const HELP_TEXT =
+  'I can help with rain, temperature, wind, humidity, UV, and the forecast — here or anywhere ("weather in Surabaya"). Ask "any rain when I\'m going to Grand Indonesia?" and I\'ll check along the route, or set a reminder like "remind me to close the windows at 6pm".';
+
+// With the AI unreachable, is the built-in reply actually an answer? Not when it
+// fell through to the help text, nor for questions the rules only half-read: a
+// comparison ("hotter there than here?" got here-only numbers), a multi-place
+// scan, or a message in another language (the rules are English keywords).
+export const fallbackIsUseful = (text, reply) => {
+  if (/needs the AI backend/.test(reply)) return false;
+  if (/\b(than|compare[ds]?|comparison|versus|vs\.?|there|other routes?|alternatives?)\b/i.test(text)) return false;
+  const words = text.toLowerCase().match(/[a-z']+/g) || [];
+  const english = /\b(the|is|it|will|what|how|should|do|does|can|i|my|a|in|to|for|today|tomorrow|now|weather|rain)\b/;
+  if (words.length >= 3 && !english.test(text.toLowerCase())) return false;
+  // The help text is a fine reply to a one-word mystery, not to a real question.
+  return reply !== HELP_TEXT || words.length < 3;
+};
+
 export const answer = (text, weather, reminders = [], hourly = [], forecast = []) => {
   const t = text.toLowerCase().trim();
 
@@ -238,5 +276,25 @@ export const answer = (text, weather, reminders = [], hourly = [], forecast = []
     return `Today in ${weather.city}: ${weather.description.toLowerCase()}, ${weather.todayLow}°–${weather.todayHigh}°, ${weather.chanceOfRain}% chance of rain.`;
   }
 
-  return 'I can help with rain, temperature, wind, humidity, UV, and the forecast — here or anywhere ("weather in Surabaya"). Ask "any rain when I\'m going to Grand Indonesia?" and I\'ll check along the route, or set a reminder like "remind me to close the windows at 6pm".';
+  return HELP_TEXT;
+};
+
+// Did the weather lookup land on the place that was asked about? WeatherAPI
+// matches loosely and silently substitutes ("Java" came back as Javanrud, Iran),
+// so every word of the query has to appear as a whole word in the answer's name,
+// region or country. Coordinates are taken as given. A miss isn't an error — the
+// caller hands the question to the AI, which can say what it found.
+const fold = (s) =>
+  String(s || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+const FILLER = new Set(['the', 'city', 'of', 'kota', 'kab', 'kabupaten', 'regency', 'town', 'area', 'district']);
+export const placeMatches = (query, card) => {
+  if (/^\s*-?\d+(\.\d+)?\s*,\s*-?\d+(\.\d+)?\s*$/.test(query)) return true;
+  const words = new Set(fold([card.name, card.country].join(' ')).split(/[^a-z0-9]+/).filter(Boolean));
+  const asked = fold(query)
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w.length >= 3 && !FILLER.has(w));
+  return asked.length > 0 && asked.every((w) => words.has(w));
 };

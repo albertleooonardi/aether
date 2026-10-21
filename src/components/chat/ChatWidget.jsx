@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { X, ArrowUp, Bell, RotateCw, SquarePen, Sparkles, Info } from 'lucide-react';
 import Logo from '../Logo';
-import { parseReminder, answer, formatClock, routeSummary } from '../../chat/assistant';
+import { parseReminder, answer, fallbackIsUseful, formatClock, formatWhen, routeSummary, weatherLead, placeMatches } from '../../chat/assistant';
 import { parseNavigation, parseWeatherIn, parseMapsUrl, parseFollowUp } from '../../chat/intents';
 import { fetchWeatherByCity } from '../../services/WeatherService';
 import { geocode, geocodeCandidates, resolveMapsUrl } from '../../services/GeoService';
@@ -147,6 +147,37 @@ const STATUS_NOTE = {
     'The backend is running but no AI key is set, so replies use the built-in rules. Add GEMINI_API_KEY or GROQ_API_KEY.',
   offline:
     "Can't reach the assistant backend — on Vercel the /api function may not be deployed. Replies use the built-in rules meanwhile.",
+};
+
+// The wait between sending and the reply. Lookups that call live weather or
+// routing tools take 5–30s; three bare dots for that long reads as a hang, so
+// the indicator says what is happening once it has been a few seconds.
+const THINKING_STEPS = [
+  [0, ''],
+  [2500, 'Thinking…'],
+  [7000, 'Checking live weather and roads…'],
+  [18000, 'Still on it, the forecast service is slow right now…'],
+];
+const Thinking = () => {
+  const [label, setLabel] = useState('');
+  useEffect(() => {
+    const ids = THINKING_STEPS.map(([ms, text]) => setTimeout(() => setLabel(text), ms));
+    return () => ids.forEach(clearTimeout);
+  }, []);
+  return (
+    <div className="flex items-center gap-2 py-1" aria-label="AetherAI is typing" role="status">
+      <span className="flex items-center gap-1">
+        {[0, 1, 2].map((i) => (
+          <span
+            key={i}
+            className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink/40"
+            style={{ animationDelay: `${i * 0.15}s` }}
+          />
+        ))}
+      </span>
+      {label && <span className="text-[12px] text-ink/45 animate-fade-in">{label}</span>}
+    </div>
+  );
 };
 
 const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute, open: openProp, onOpenChange }) => {
@@ -354,10 +385,27 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute, open: op
     try {
       const data = await fetchWeatherByCity(place);
       const card = toCard(data);
+      if (!placeMatches(place, card)) {
+        // The lookup landed somewhere else — let the AI answer instead of a wrong card.
+        logTurn({
+          handler,
+          message: rawText,
+          parsed: { place },
+          outcome: 'geocode_mismatch',
+          city: card.name,
+          latency_ms: Date.now() - startedAt,
+        });
+        return false;
+      }
       if (!isStaleTurn(myEpoch)) lastIntent.current = { type: 'weather', place: card.name };
-      sayAssistant(`Here's **${card.name}** right now — ${card.condition.toLowerCase()}, ${card.temp}°.`, {
+      sayAssistant(weatherLead(card), {
         kind: 'weather',
         data: card,
+        // The obvious next questions about a place, one tap each.
+        chips: [
+          { label: 'Tomorrow?', text: `Will it rain in ${card.name} tomorrow?` },
+          { label: `Route to ${card.name}`, text: `Route to ${card.name}` },
+        ],
       });
       logTurn({
         handler,
@@ -367,8 +415,8 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute, open: op
         city: card.name,
         latency_ms: Date.now() - startedAt,
       });
+      return true;
     } catch {
-      sayAssistant(`I couldn't find weather for “${place}”. Try a different spelling or a nearby city.`);
       // The place the user asked about couldn't be geocoded/looked up — this
       // is exactly the "geocode_failed" standing bug report this logging
       // exists for.
@@ -380,6 +428,7 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute, open: op
         city: place,
         latency_ms: Date.now() - startedAt,
       });
+      return false; // the AI can still look it up, or say it can't
     }
   };
 
@@ -396,11 +445,19 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute, open: op
       : null;
 
     if (!originLoc) {
-      sayAssistant(
-        nav.originText
-          ? `I couldn't find your starting point “${nav.originText}”.`
-          : 'Search a city in the app first so I can use it as your starting point.'
-      );
+      // A named start the geocoder can't place: the AI's route tool may still find it.
+      if (nav.originText) {
+        logTurn({
+          handler,
+          message: rawText,
+          parsed: { origin: nav.originText, destination: nav.destText },
+          outcome: 'geocode_failed',
+          city: nav.originText,
+          latency_ms: Date.now() - startedAt,
+        });
+        return false;
+      }
+      sayAssistant('Search a city in the app first so I can use it as your starting point.');
       // Origin couldn't be resolved to a place at all — a geocode failure.
       logTurn({
         handler,
@@ -436,12 +493,10 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute, open: op
     // Bias the destination search around the origin — you drive from there.
     const candidates = await geocodeCandidates(nav.destText, originLoc);
     if (!candidates.length) {
+      // The quick geocoder knows streets and towns better than landmarks ("Grand
+      // Indonesia" found nothing). Hand the question to the AI, whose route tool
+      // searches more widely and draws the map itself; a pasted Maps link still works.
       if (!isStaleTurn(myEpoch)) pending.current = { nav, originLoc };
-      sayAssistant(
-        `I couldn't find “${nav.destText}”. Try adding the city — or paste a Google Maps link and I'll use that exact spot.`
-      );
-      // Destination geocode returned nothing — same failure class as the
-      // origin case above.
       logTurn({
         handler,
         message: rawText,
@@ -450,10 +505,14 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute, open: op
         city: originLoc.name,
         latency_ms: Date.now() - startedAt,
       });
-      return;
+      return false;
     }
-    // One clear hit: just go. Several: ask, rather than betting on the top one.
+    // One clear hit: just go. Several: ask, rather than betting on the top one —
+    // unless exactly one of them carries every word that was typed ("Grand
+    // Indonesia" → the mall, not "Grand Golf I" or "Indonesia Convention Exhibition").
     if (candidates.length === 1) return await runRoute(nav, originLoc, candidates[0], { handler, rawText, epoch: myEpoch });
+    const exact = candidates.filter((c) => placeMatches(nav.destText, { name: c.name }));
+    if (exact.length === 1) return await runRoute(nav, originLoc, exact[0], { handler, rawText, epoch: myEpoch });
 
     if (!isStaleTurn(myEpoch)) pending.current = { nav, originLoc };
     // The question carries its own context: picking from an older picker must
@@ -533,7 +592,14 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute, open: op
       lastIntent.current = { type: 'route', nav, origin: originLoc, dest: destLoc };
       lastCard.current = { origin: originLoc, dest: destLoc, routes: result.routes, bestIndex: result.bestIndex, shownAt: Date.now() };
     }
-    sayAssistant(summary, routeCard(originLoc, destLoc, result));
+    sayAssistant(summary, {
+      ...routeCard(originLoc, destLoc, result),
+      // "Should I leave later?" is the natural follow-up to a rain check.
+      chips: [
+        { label: 'Leave in 1 hour?', text: 'What about in 1 hour?' },
+        { label: 'Leave in 3 hours?', text: 'What about in 3 hours?' },
+      ],
+    });
     logTurn({
       handler,
       message: rawText,
@@ -563,11 +629,64 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute, open: op
     }
   };
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    const text = input.trim();
+  // One AI answer for `text`. Falls back to the built-in rules when the backend or
+  // every provider is unavailable — but only where those rules genuinely answer;
+  // otherwise it says so and offers a retry instead of a reply to another question.
+  const aiTurn = async (text, myEpoch) => {
+    const sayAssistant = (reply, extra) => say('assistant', reply, extra, myEpoch);
+    const startedAt = Date.now();
+    try {
+      const history = messagesRef.current
+        .filter((m) => (m.role === 'user' || m.role === 'assistant') && m.kind !== 'retry')
+        .map((m) => ({ role: m.role, text: m.text }));
+      // A shortcut that awaited (and then handed over) let a render land, so the
+      // ref may already end with this message — don't send it twice.
+      const tail = history[history.length - 1];
+      if (!(tail && tail.role === 'user' && tail.text === text)) history.push({ role: 'user', text });
+      const out = await askAI(history, aiContext());
+      setStatus('online'); // a real reply just came back — definitely up
+      sayAssistant(out.reply);
+      logTurn({
+        handler: 'ai',
+        message: text,
+        outcome: 'ok',
+        provider: out.provider,
+        latency_ms: Date.now() - startedAt,
+      });
+      const routeAction = Array.isArray(out.actions) && out.actions.find((a) => a && a.kind === 'route');
+      if (routeAction) await renderAiRoute(routeAction, myEpoch);
+    } catch {
+      const local = answer(text, weatherRef.current, reminders, hourlyRef.current, forecastRef.current);
+      if (fallbackIsUseful(text, local)) sayAssistant(local);
+      else
+        sayAssistant("I couldn't reach the AI just now, so I can't answer that one properly. It's usually back in a few seconds.", {
+          kind: 'retry',
+          data: { text },
+        });
+      logTurn({ handler: 'fallback', message: text, outcome: 'ai_error', latency_ms: Date.now() - startedAt });
+    }
+  };
+
+  // "Try again" on an unanswered message: drop the apology and ask once more,
+  // without posting the user's message a second time.
+  const retry = async (msg) => {
+    if (busy) return;
+    setMessages((prev) => prev.filter((m) => m.id !== msg.id));
+    const myEpoch = epoch.current;
+    setBusy(true);
+    try {
+      await aiTurn(msg.data.text, myEpoch);
+    } finally {
+      if (myEpoch === epoch.current) setBusy(false);
+    }
+  };
+
+  // `override` sends a follow-up chip's text without touching the composer.
+  const handleSubmit = async (e, override) => {
+    e?.preventDefault();
+    const text = (override ?? input).trim();
     if (!text || busy) return;
-    setInput('');
+    if (override === undefined) setInput('');
     // Captured before anything else: this turn's identity for every guarded write.
     const myEpoch = epoch.current;
     const sayAssistant = (reply, extra) => say('assistant', reply, extra, myEpoch);
@@ -586,7 +705,7 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute, open: op
       if ('Notification' in window && Notification.permission === 'default') {
         Notification.requestPermission();
       }
-      sayAssistant(`Got it — I'll remind you to **${reminder.label}** at ${formatClock(reminder.dueEpoch)}.`);
+      sayAssistant(`Got it — I'll remind you to **${reminder.label}** ${formatWhen(reminder.dueEpoch)}.`);
       logTurn({ handler: 'reminder', message: text, parsed: { label: reminder.label }, outcome: 'ok' });
       return;
     }
@@ -617,11 +736,12 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute, open: op
       }
 
       // Rich, action-backed intents render cards/maps.
+      // Each shortcut returns false when it couldn't answer well; the AI takes over.
       const nav = parseNavigation(text);
-      if (nav) return await handleNavigation(nav, { handler: 'route', rawText: text, epoch: myEpoch });
+      if (nav && (await handleNavigation(nav, { handler: 'route', rawText: text, epoch: myEpoch })) !== false) return;
 
       const place = parseWeatherIn(text);
-      if (place) return await handleWeatherIn(place, { handler: 'weather-in', rawText: text, epoch: myEpoch });
+      if (!nav && place && (await handleWeatherIn(place, { handler: 'weather-in', rawText: text, epoch: myEpoch }))) return;
 
       // "What about Central Park?" / "how about at 8pm?" — re-ask the previous
       // question with just that part swapped.
@@ -630,7 +750,7 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute, open: op
       if (fu && last) {
         if (fu.place) {
           if (last.type === 'route') {
-            return await handleNavigation(
+            const handled = await handleNavigation(
               {
                 ...last.nav,
                 destText: fu.place,
@@ -639,8 +759,10 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute, open: op
               },
               { handler: 'follow-up', rawText: text, epoch: myEpoch }
             );
+            if (handled !== false) return;
+          } else if (await handleWeatherIn(fu.place, { handler: 'follow-up', rawText: text, epoch: myEpoch })) {
+            return;
           }
-          return await handleWeatherIn(fu.place, { handler: 'follow-up', rawText: text, epoch: myEpoch });
         }
         if (fu.departAt && last.type === 'route') {
           return await runRoute(
@@ -652,30 +774,8 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute, open: op
         }
       }
 
-      // Everything else → Gemini (AetherAI), grounded with weather context.
-      // Falls back to the local assistant if the AI backend/key is unavailable.
-      const startedAt = Date.now();
-      try {
-        const history = messagesRef.current
-          .filter((m) => m.role === 'user' || m.role === 'assistant')
-          .map((m) => ({ role: m.role, text: m.text }));
-        history.push({ role: 'user', text });
-        const out = await askAI(history, aiContext());
-        setStatus('online'); // a real reply just came back — definitely up
-        sayAssistant(out.reply);
-        logTurn({
-          handler: 'ai',
-          message: text,
-          outcome: 'ok',
-          provider: out.provider,
-          latency_ms: Date.now() - startedAt,
-        });
-        const routeAction = Array.isArray(out.actions) && out.actions.find((a) => a && a.kind === 'route');
-        if (routeAction) await renderAiRoute(routeAction, myEpoch);
-      } catch {
-        sayAssistant(answer(text, weatherRef.current, reminders, hourlyRef.current, forecastRef.current));
-        logTurn({ handler: 'fallback', message: text, outcome: 'ai_error', latency_ms: Date.now() - startedAt });
-      }
+      // Everything else → the AI, grounded with weather context.
+      await aiTurn(text, myEpoch);
     } finally {
       // Cleared mid-turn: clearConversation already released busy, and a newer turn
       // may own busy by now — don't clobber it.
@@ -686,6 +786,8 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute, open: op
   };
 
   const activeCount = reminders.filter((r) => r.dueEpoch > Date.now()).length;
+  // Follow-up chips belong to the latest reply only; older ones would be stale.
+  const lastReplyId = [...messages].reverse().find((m) => m.role === 'assistant')?.id;
   const meta = STATUS[status] || STATUS.checking;
   // A fresh thread shows a welcome screen instead of the intro message.
   const fresh = messages.length <= 1 && (!messages[0] || messages[0].id === 'intro');
@@ -865,21 +967,35 @@ const ChatWidget = ({ weather, hourly = [], forecast = [], onOpenRoute, open: op
                         />
                       )}
                       {m.kind === 'choice' && <PlacePicker data={m.data} onPick={(c) => handlePick(m, c)} />}
+                      {m.chips && m.id === lastReplyId && !busy && (
+                        <div className="mt-2.5 flex flex-wrap gap-1.5">
+                          {m.chips.map((c) => (
+                            <button
+                              key={c.text}
+                              type="button"
+                              onClick={() => handleSubmit(null, c.text)}
+                              className="inline-flex h-8 items-center rounded-full border border-ink/15 px-3 text-[12px] font-medium text-ink/75 transition hover:bg-ink/[0.06] hover:text-ink"
+                            >
+                              {c.label}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {m.kind === 'retry' && (
+                        <button
+                          type="button"
+                          onClick={() => retry(m)}
+                          disabled={busy}
+                          className="mt-2 inline-flex h-8 items-center gap-1.5 rounded-full border border-ink/15 px-3 text-[12px] font-medium text-ink/75 transition hover:bg-ink/[0.06] hover:text-ink disabled:opacity-40"
+                        >
+                          <RotateCw size={12} /> Try again
+                        </button>
+                      )}
                     </div>
                   )
                 )}
 
-                {busy && (
-                  <div className="flex items-center gap-1 py-1" aria-label="AetherAI is typing">
-                    {[0, 1, 2].map((i) => (
-                      <span
-                        key={i}
-                        className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink/40"
-                        style={{ animationDelay: `${i * 0.15}s` }}
-                      />
-                    ))}
-                  </div>
-                )}
+                {busy && <Thinking />}
                 <div ref={logEnd} />
               </div>
             )}

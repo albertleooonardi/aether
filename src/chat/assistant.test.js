@@ -212,3 +212,76 @@ describe('UV wording', () => {
     expect(answer('uv?', wx({ isDay: 1, uv: 11 }))).toMatch(/extreme/i);
   });
 });
+
+describe('weather-in lookups land on the place that was asked about', () => {
+  const { placeMatches } = require('./assistant');
+  const card = (name, country) => ({ name, country });
+
+  test('the plain cases match', () => {
+    expect(placeMatches('Bandung', card('Bandung', 'West Java, Indonesia'))).toBe(true);
+    expect(placeMatches('new york', card('New York', 'New York, United States of America'))).toBe(true);
+    expect(placeMatches('Kota Bandung', card('Bandung', 'West Java, Indonesia'))).toBe(true);
+  });
+
+  test('a loose substitution is caught (Java came back as Javanrud, Iran)', () => {
+    expect(placeMatches('Java', card('Javanrud', 'Bakhtaran, Iran'))).toBe(false);
+    expect(placeMatches('Zyrthandia Prime', card('Prime', 'Viseu, Portugal'))).toBe(false);
+  });
+
+  test('coordinates are taken as given', () => {
+    expect(placeMatches('-6.2, 106.8', card('Jakarta', 'Indonesia'))).toBe(true);
+  });
+});
+
+describe('the line above a weather card adds advice instead of repeating it', () => {
+  const { weatherLead } = require('./assistant');
+  const base = { name: 'Bandung', low: 20, high: 28, chanceOfRain: 10 };
+
+  test('likely rain leads with the umbrella', () => {
+    expect(weatherLead({ ...base, chanceOfRain: 72 })).toMatch(/umbrella.*72% chance of rain/i);
+  });
+  test('possible rain is hedged', () => {
+    expect(weatherLead({ ...base, chanceOfRain: 40 })).toMatch(/possible.*40%/i);
+  });
+  test('heat and cold get their own advice', () => {
+    expect(weatherLead({ ...base, high: 35 })).toMatch(/hot.*35°/i);
+    expect(weatherLead({ ...base, low: 2, high: 8 })).toMatch(/cold.*2° to 8°/i);
+  });
+  test('an easy day says so', () => {
+    expect(weatherLead(base)).toMatch(/comfortable.*20° to 28°/i);
+  });
+});
+
+describe('reminder confirmations say which day', () => {
+  const { formatWhen } = require('./assistant');
+  const at = (h, dayOffset = 0) => {
+    const d = new Date(2026, 9, 21, 21, 30); // 9:30 PM
+    d.setDate(d.getDate() + dayOffset);
+    d.setHours(h, 0, 0, 0);
+    return d.getTime();
+  };
+  const now = new Date(2026, 9, 21, 21, 30).getTime();
+
+  test('later today', () => expect(formatWhen(at(23), now)).toBe('today at 11:00 PM'));
+  test('5pm asked at 9:30pm is tomorrow', () => expect(formatWhen(at(17, 1), now)).toBe('tomorrow at 5:00 PM'));
+});
+
+describe('with the AI down, a built-in reply is only sent when it answers the question', () => {
+  const { fallbackIsUseful, HELP_TEXT } = require('./assistant');
+
+  test('a plain question the rules cover is answered', () => {
+    expect(fallbackIsUseful('Will it rain today?', 'No rain expected in Tangerang…')).toBe(true);
+  });
+  test('a comparison is not answered with one place\'s numbers', () => {
+    expect(fallbackIsUseful('Is it hotter there than here?', "It's 31° in Tangerang…")).toBe(false);
+  });
+  test('a message in another language is not answered in English keywords', () => {
+    expect(fallbackIsUseful('Besok hujan nggak di Jakarta?', HELP_TEXT)).toBe(false);
+  });
+  test('a real question that only reached the help text is not "answered"', () => {
+    expect(fallbackIsUseful('Any other routes?', HELP_TEXT)).toBe(false);
+  });
+  test('the help text is fine for a one-word mystery', () => {
+    expect(fallbackIsUseful('asdfghjkl', HELP_TEXT)).toBe(true);
+  });
+});
