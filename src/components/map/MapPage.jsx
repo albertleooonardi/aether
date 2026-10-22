@@ -230,7 +230,11 @@ const useMedia = (query) => {
   return match;
 };
 
-const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRouteShown, onOpenWeather }) => {
+const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRouteShown, onOpenWeather, chatOpen = false }) => {
+  // Wide screens: the chat floats over the map's right edge, so the map's own
+  // right-hand UI (buttons, weather panel) moves left of it instead of under it.
+  const besideChat = chatOpen ? 'lg:right-[26rem]' : '';
+  const detailBesideChat = chatOpen ? 'lg:right-[29rem]' : '';
   const el = useRef(null);
   const mapRef = useRef(null);
   const panelRef = useRef(null);
@@ -1392,7 +1396,7 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
       <div
         ref={panelRef}
         className={`absolute left-3 top-[var(--map-top)] z-30 w-[calc(100%-4.5rem)] sm:top-3 sm:w-[min(380px,calc(100%-1.5rem))] ${
-          (narrow && routeFolded) || sheetCovers ? 'hidden' : narrow && detail ? '[@media(max-height:720px)]:hidden' : ''
+          (narrow && routeFolded) || sheetCovers || (short && detail) ? 'hidden' : narrow && detail ? '[@media(max-height:720px)]:hidden' : ''
         } ${short ? 'thin-scroll max-h-[calc(100%-1.5rem)] overflow-y-auto rounded-[22px]' : ''}`}
       >
         <div className={`panel-float overflow-hidden rounded-[22px] ${routeFolded ? 'hidden' : ''}`}>
@@ -1527,7 +1531,11 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
       )}
 
       {/* ---------- map controls ---------- */}
-      <div className={`absolute right-3 top-[var(--map-top)] z-[35] flex-col items-end gap-2 sm:top-3 ${sheetCovers ? 'hidden' : 'flex'}`}>
+      <div
+        className={`absolute right-3 top-[var(--map-top)] z-[35] flex-col items-end gap-2 transition-[right] duration-300 sm:top-3 ${besideChat} ${
+          sheetCovers ? 'hidden' : 'flex'
+        }`}
+      >
         <div className="panel-float hidden flex-col overflow-hidden rounded-2xl sm:flex">
           <button onClick={() => zoomBy(1)} aria-label="Zoom in" title="Zoom in" className="map-btn">
             <Plus size={17} />
@@ -1589,7 +1597,9 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
 
       {/* ---------- weather detail panel ---------- */}
       {detail && (
-        <div className="absolute inset-x-3 bottom-[var(--map-bottom)] z-[38] animate-fade-in-up sm:bottom-auto sm:left-auto sm:right-16 sm:top-3 sm:w-[21rem]">
+        <div
+          className={`absolute inset-x-3 bottom-[var(--map-bottom)] z-[38] animate-fade-in-up transition-[right] duration-300 sm:bottom-3 sm:left-auto sm:right-16 sm:w-[21rem] lg:bottom-auto lg:top-3 ${detailBesideChat}`}
+        >
           <div
             className="panel-float max-h-[calc(100dvh-var(--map-top)-var(--map-bottom)-1rem)] overflow-y-auto rounded-[22px] px-5 pb-4 pt-2 thin-scroll sm:max-h-[calc(100dvh-10rem)] sm:pb-5 sm:pt-5"
             onTouchStart={(e) => {
@@ -1688,9 +1698,12 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
                   </div>
                 )}
 
+                {/* Phones: the actions stay pinned to the sheet's bottom edge, so an
+                    expanded sheet on a short screen never scrolls them out of reach. */}
+                <div className="sticky bottom-0 z-10 -mx-5 mt-2 bg-panel px-5 pb-1 pt-2 sm:static sm:z-auto sm:mx-0 sm:mt-4 sm:bg-transparent sm:p-0">
                 <button
                   onClick={routeToDetail}
-                  className="btn-pill mt-4 h-11 w-full justify-center text-sm sm:h-10"
+                  className="btn-pill h-11 w-full justify-center text-sm sm:h-10"
                 >
                   <Navigation size={14} /> Directions with rain check
                 </button>
@@ -1707,6 +1720,7 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
                   >
                     Full forecast <ArrowUpRight size={13} />
                   </button>
+                </div>
                 </div>
               </>
             )}
@@ -1732,7 +1746,7 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
       {/* ---------- first-use hint + radar timeline ---------- */}
       <div
         className={`pointer-events-none absolute bottom-[var(--map-bottom)] left-3 right-3 z-20 flex flex-col items-center gap-2 sm:bottom-4 sm:left-1/2 sm:right-auto sm:w-[min(460px,calc(100%-14rem))] sm:-translate-x-1/2 ${
-          detail && short ? 'hidden' : detail || (narrow && (route || menuField)) ? 'hidden sm:flex' : ''
+          detail ? 'hidden lg:flex' : (narrow || short) && (route || menuField) ? 'hidden' : ''
         }`}
       >
         {showHint && !(short && route) && (

@@ -311,6 +311,7 @@ const App = () => {
               initialRoute={chatRoute}
               onRouteShown={() => setChatRoute(null)}
               onOpenWeather={openWeatherAt}
+              chatOpen={chatOpen}
             />
           </div>
         )}

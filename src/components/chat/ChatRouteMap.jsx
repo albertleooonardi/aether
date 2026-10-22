@@ -17,6 +17,28 @@ const RADAR_MAX_NATIVE_ZOOM = 7;
 
 const RAINVIEWER_INDEX = 'https://api.rainviewer.com/public/weather-maps.json';
 
+// Esri's keyless canvas basemaps, one per app theme (same pair as the full map).
+const BASEMAP = {
+  dark: 'https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',
+  light: 'https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}',
+};
+// A miniature of the basemap behind legend swatches, so the ramp is shown on the
+// ground it is drawn on.
+const CHIP_BG = { dark: 'rgba(15,23,42,0.9)', light: '#efefef' };
+
+// The app theme lives on <html data-theme>; follow it so the mini-map flips with
+// the toggle instead of staying dark inside a light chat.
+const useDocTheme = () => {
+  const read = () => (document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark');
+  const [theme, setTheme] = useState(read);
+  useEffect(() => {
+    const obs = new MutationObserver(() => setTheme(read()));
+    obs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    return () => obs.disconnect();
+  }, []);
+  return theme;
+};
+
 // Inline mini-map for a chat route reply: the selected route is painted per
 // stretch by the rain sampled there, alternatives sit faded behind it, and a
 // radar overlay sits on top. `onOpenInMap` hands the same route to the app's
@@ -25,6 +47,8 @@ const ChatRouteMap = ({ data, onOpenInMap }) => {
   const el = useRef(null);
   const mapRef = useRef(null);
   const routeLayer = useRef(null);
+  const baseLayer = useRef(null);
+  const theme = useDocTheme();
   const [ready, setReady] = useState(!!window.L);
   const [selected, setSelected] = useState(data.bestIndex);
 
@@ -61,14 +85,6 @@ const ChatRouteMap = ({ data, onOpenInMap }) => {
     });
     mapRef.current = map;
 
-    // CARTO now requires an API key and serves a watermarked tile without erroring;
-    // Esri's Dark Gray Canvas is the keyless replacement. Path is {z}/{y}/{x}, and
-    // coverage stops at z16 over Indonesia — hence maxNativeZoom, so Leaflet upscales
-    // rather than tiling the map with "Map data not yet available" placeholders.
-    L.tileLayer(
-      'https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',
-      { maxZoom: 19, maxNativeZoom: 16, attribution: 'Esri · © OpenStreetMap contributors' }
-    ).addTo(map);
 
     // Radar overlay (best-effort; may be unavailable on some networks).
     (async () => {
@@ -98,8 +114,27 @@ const ChatRouteMap = ({ data, onOpenInMap }) => {
       map.remove();
       mapRef.current = null;
       routeLayer.current = null;
+      baseLayer.current = null;
     };
   }, [ready]);
+
+  // The basemap, swapped when the theme flips. CARTO now requires an API key and
+  // serves a watermarked tile without erroring; Esri's canvas is the keyless
+  // replacement. Path is {z}/{y}/{x}, and coverage stops at z16 over Indonesia —
+  // hence maxNativeZoom, so Leaflet upscales rather than tiling the map with
+  // "Map data not yet available" placeholders.
+  useEffect(() => {
+    const L = window.L;
+    const map = mapRef.current;
+    if (!ready || !L || !map) return;
+    if (baseLayer.current) baseLayer.current.remove();
+    baseLayer.current = L.tileLayer(BASEMAP[theme], {
+      maxZoom: 19,
+      maxNativeZoom: 16,
+      zIndex: 1,
+      attribution: 'Esri · © OpenStreetMap contributors',
+    }).addTo(map);
+  }, [ready, theme]);
 
   // Redraw whenever the pick changes.
   useEffect(() => {
@@ -123,9 +158,8 @@ const ChatRouteMap = ({ data, onOpenInMap }) => {
     segmentsOf(sel).forEach((s) => {
       const lvl = LEVEL[s.level] || LEVEL.unknown;
       const line = L.polyline(sel.coordinates.slice(s.from, s.to + 1), {
-        // Green at 0% chance of rain through to red at 100%. This map always
-        // draws on the dark basemap.
-        color: segmentStroke(s, 'dark'),
+        // Green at 0% chance of rain through to red at 100%, tuned per basemap.
+        color: segmentStroke(s, theme),
         // "No data" also breaks the line, so absence is never colour-alone.
         ...(lvl.dashed ? { dashArray: '7 9' } : {}),
         weight: 6,
@@ -145,7 +179,7 @@ const ChatRouteMap = ({ data, onOpenInMap }) => {
     // Where the chance of rain changes. The chat map is small, so fewer marks.
     rainBreakpoints(sel, { maxMarks: 4, minDelta: 10 }).forEach((m) => {
       L.marker([m.lat, m.lon], {
-        icon: L.divIcon({ className: '', html: breakpointHtml(m, 'dark'), iconSize: [0, 0] }),
+        icon: L.divIcon({ className: '', html: breakpointHtml(m, theme), iconSize: [0, 0] }),
         keyboard: false,
         interactive: false,
       }).addTo(group);
@@ -162,7 +196,7 @@ const ChatRouteMap = ({ data, onOpenInMap }) => {
     L.marker([data.dest.lat, data.dest.lon], { icon: dot('#fb923c') }).addTo(group);
 
     map.fitBounds(L.latLngBounds(sel.coordinates), { padding: [24, 24] });
-  }, [ready, data, selected]);
+  }, [ready, data, selected, theme]);
 
   const shown = data.routes[selected];
   const legend = [...new Set(segmentsOf(shown).map((s) => s.level))];
@@ -189,7 +223,7 @@ const ChatRouteMap = ({ data, onOpenInMap }) => {
           <button
             onClick={() => onOpenInMap(data)}
             title="Open on the full map page"
-            className="absolute right-2 top-2 z-[1000] flex min-h-[30px] items-center gap-1 rounded-full bg-panel/85 px-2.5 py-1 text-[10px] font-semibold text-ink/80 shadow backdrop-blur transition hover:bg-panel hover:text-ink"
+            className="absolute right-2 top-2 z-[1000] flex h-8 items-center gap-1 rounded-full bg-panel/85 px-3 text-[11px] font-semibold text-ink/80 shadow backdrop-blur transition hover:bg-panel hover:text-ink"
           >
             <Maximize2 size={11} /> Open in map
           </button>
@@ -213,12 +247,12 @@ const ChatRouteMap = ({ data, onOpenInMap }) => {
               }`}
             >
               {/* Rule: anything that samples the drawn map line (this dot, the legend swatches) uses
-                  `stroke` on a dark chip; anything that is panel TEXT (the badge below) uses `ink`.
+                  `stroke` on a basemap-coloured chip; anything that is panel TEXT (the badge below) uses `ink`.
                   `ink` here made a `light` route the same hex the legend labels "Dry". */}
-              <span className="inline-flex shrink-0 items-center rounded-full bg-slate-900/90 p-0.5 ring-1 ring-ink/15">
+              <span className="inline-flex shrink-0 items-center rounded-full p-0.5 ring-1 ring-ink/15" style={{ background: CHIP_BG[theme] }}>
                 <span
                   className="h-2 w-2 rounded-full"
-                  style={{ background: isSelected ? segmentStroke({ level: r.rain.level, chance: r.rain.chance }, 'dark') : ALT_ROUTE_COLOR }}
+                  style={{ background: isSelected ? segmentStroke({ level: r.rain.level, chance: r.rain.chance }, theme) : ALT_ROUTE_COLOR }}
                 />
               </span>
               <span className="min-w-0 flex-1 truncate">
@@ -241,8 +275,8 @@ const ChatRouteMap = ({ data, onOpenInMap }) => {
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-1 pt-1 text-[10px] text-ink/45">
           <span className="flex items-center gap-1.5">
             <span>0%</span>
-            <span className="inline-flex items-center rounded-full bg-slate-900/90 px-1 py-0.5 ring-1 ring-ink/15">
-              <span className="inline-block h-1.5 w-14 rounded-full" style={{ background: rainGradient('dark') }} />
+            <span className="inline-flex items-center rounded-full px-1 py-0.5 ring-1 ring-ink/15" style={{ background: CHIP_BG[theme] }}>
+              <span className="inline-block h-1.5 w-14 rounded-full" style={{ background: rainGradient(theme) }} />
             </span>
             <span>100% chance of rain</span>
           </span>
