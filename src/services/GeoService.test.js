@@ -241,6 +241,21 @@ describe('photonSuggest', () => {
     expect(global.fetch.mock.calls[0][0]).toMatch(/^https:\/\/photon\.komoot\.io\/api\?/);
   });
 
+  test('a doubtful leader asks Photon again for local names — still Photon only', async () => {
+    // English names hide the one people type: "Kebun Raya Bogor" is displayed as
+    // "Bogor Botanical Gardens", so a second ask for local ('default') names follows.
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce(photon([feat('Kebun Raya Cibinong', -6.49, 106.85)]))
+      .mockResolvedValueOnce(photon([feat('Kebun Raya Bogor', -6.5976, 106.7996)]));
+
+    const out = await photonSuggest('Kebun Raya Bogor', null);
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    for (const [url] of global.fetch.mock.calls) expect(url).toMatch(/^https:\/\/photon\.komoot\.io\/api\?/);
+    expect(global.fetch.mock.calls[1][0]).toContain('lang=default');
+    expect(out[0].name).toBe('Kebun Raya Bogor');
+  });
+
   test('a failed request returns empty rather than throwing', async () => {
     global.fetch = jest.fn().mockRejectedValueOnce(new Error('network down'));
 

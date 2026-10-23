@@ -7,6 +7,7 @@
 // Both OSM geocoders read the same data, but Photon indexes POIs far better,
 // while Nominatim is the more reliable fallback for plain place names.
 import { WEATHER_API_KEY, WEATHER_BASE_URL, upstreamSignal } from './config';
+import { rankPlaces, needsMore, nominatimLabel } from '../utils/placeRank';
 
 const PHOTON = 'https://photon.komoot.io/api';
 const NOMINATIM = 'https://nominatim.openstreetmap.org/search';
@@ -61,15 +62,30 @@ const fromPhoton = (f) => {
   const [lon, lat] = f.geometry.coordinates;
   const name = p.name || p.street || p.city;
   if (!name || !Number.isFinite(lat)) return null;
-  return { name, label: [name, p.city || p.state, p.country].filter(Boolean).join(', '), lat, lon };
+  return {
+    name,
+    label: [name, p.city || p.state, p.country].filter(Boolean).join(', '),
+    lat,
+    lon,
+    // For ranking (utils/placeRank.js), stripped again before results leave here.
+    kind: p.osm_key && `${p.osm_key}=${p.osm_value}`,
+    area: [p.district, p.locality, p.city, p.county, p.state].filter(Boolean).join(' '),
+  };
 };
 
 const fromNominatim = (l) => ({
   name: l.name || shortName(l.display_name),
-  label: shortName(l.display_name),
+  label: nominatimLabel(l.display_name),
   lat: parseFloat(l.lat),
   lon: parseFloat(l.lon),
+  kind: l.class && `${l.class}=${l.type}`,
+  importance: Number(l.importance) || 0,
+  area: l.display_name,
+  alias: true,
 });
+
+// Callers get plain places, as before.
+const slim = ({ name, label, lat, lon, source }) => ({ name, label, lat, lon, ...(source ? { source } : {}) });
 
 /* ---------------- Google Maps links ---------------- */
 
@@ -198,14 +214,17 @@ export const geocodeCandidates = async (query, near, limit = MAX_CANDIDATES) => 
   ];
 
   const found = [];
-  for (const load of sources) {
+  let proxied = false;
+  for (const [i, load] of sources.entries()) {
     // Overall deadline gone -> stop. A single source timing out is NOT this case:
     // it just ends that source's own signal and the loop moves on to the next.
     const remaining = deadline - Date.now();
     if (remaining < MIN_SOURCE_MS) break;
     signal = upstreamSignal(Math.min(SOURCE_MS, remaining));
     try {
-      found.push(...(await load()));
+      const got = await load();
+      if (i === 0 && got.length) proxied = true;
+      found.push(...got);
     } catch {
       /* this source failed or timed out - try the next one */
     }
@@ -214,7 +233,10 @@ export const geocodeCandidates = async (query, near, limit = MAX_CANDIDATES) => 
     if (dedupe(found).length >= limit) break;
   }
 
-  return dedupe(found).slice(0, limit);
+  // The backend already ranked its answer the way Google does; keep that order.
+  // Without it, rank the direct results here with the same rules.
+  const ordered = proxied ? found : rankPlaces(query, found, biased(near) ? near : null);
+  return dedupe(ordered).slice(0, limit).map(slim);
 };
 
 export const geocode = async (query, near) => (await geocodeCandidates(query, near, 1))[0] || null;
@@ -231,14 +253,30 @@ const SUGGEST_LIMIT = 6;
 
 export const photonSuggest = async (query, near, signal) => {
   const atLatLon = biased(near) ? `&lat=${near.lat}&lon=${near.lon}` : '';
-  try {
+  const at = biased(near) ? near : null;
+  const load = async (lang) => {
     const res = await fetch(
-      `${PHOTON}?q=${encodeURIComponent(query)}&limit=${PROVIDER_LIMIT}&lang=en${atLatLon}`,
+      `${PHOTON}?q=${encodeURIComponent(query)}&limit=${PROVIDER_LIMIT}&lang=${lang}${atLatLon}`,
       { signal }
     );
     if (!res.ok) return [];
-    const found = ((await res.json()).features || []).map(fromPhoton).filter(Boolean);
-    return dedupe(found).slice(0, SUGGEST_LIMIT);
+    return ((await res.json()).features || []).map(fromPhoton).filter(Boolean);
+  };
+  try {
+    let found = await load('en');
+    // Same ranking as a full search: the mall before its parking lot, and none
+    // of Photon's word-less guesses ("Ciater Udik" → Cisterna, Italy).
+    let ranked = rankPlaces(query, found, at);
+    // English names can hide the one people type: "Kebun Raya Bogor" comes back
+    // as "Bogor Botanical Gardens". When the leader looks doubtful, ask again for
+    // local names and rank both together (one extra request, only then).
+    // Nothing at all won't change with a different display language: Photon
+    // already searched every name each place has.
+    if (found.length && needsMore(query, ranked, at)) {
+      found = found.concat(await load('default'));
+      ranked = rankPlaces(query, found, at);
+    }
+    return dedupe(ranked).slice(0, SUGGEST_LIMIT).map(slim);
   } catch {
     // Network failure or an aborted (superseded) request — either way stay
     // silent here; only the explicit submit search reports errors.
