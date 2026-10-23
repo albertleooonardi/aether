@@ -231,10 +231,6 @@ const useMedia = (query) => {
 };
 
 const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRouteShown, onOpenWeather, chatOpen = false }) => {
-  // Wide screens: the chat floats over the map's right edge, so the map's own
-  // right-hand UI (buttons, weather panel) moves left of it instead of under it.
-  const besideChat = chatOpen ? 'lg:right-[26rem]' : '';
-  const detailBesideChat = chatOpen ? 'lg:right-[29rem]' : '';
   const el = useRef(null);
   const mapRef = useRef(null);
   const panelRef = useRef(null);
@@ -301,6 +297,42 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
   const [showHint, setShowHint] = useState(() => !hintSeen());
   const narrow = useMedia(NARROW_QUERY); // phone layout
   const short = useMedia(SHORT_QUERY); // landscape phone
+
+  // Wide screens: the chat floats over the map's lower-right corner. The map's
+  // right-hand UI (buttons, weather panel) steps left of it — but only the parts
+  // that would actually end up underneath. On a tall screen the chat sits below
+  // the buttons, and moving them anyway just left them stranded mid-map.
+  const controlsRef = useRef(null);
+  const detailBoxRef = useRef(null);
+  const [underChat, setUnderChat] = useState({ controls: false, detail: false });
+  useEffect(() => {
+    if (!chatOpen || narrow) {
+      setUnderChat({ controls: false, detail: false });
+      return undefined;
+    }
+    const measure = () => {
+      const chat = document.querySelector('[role="dialog"][aria-label="AetherAI assistant"]');
+      if (!chat) return;
+      const top = chat.getBoundingClientRect().top - 8; // keep a little air between them
+      // Shifting only changes `right`, so the vertical extent read here holds either way.
+      const below = (node) => !!node && node.getBoundingClientRect().bottom > top;
+      const next = { controls: below(controlsRef.current), detail: below(detailBoxRef.current) };
+      setUnderChat((prev) => (prev.controls === next.controls && prev.detail === next.detail ? prev : next));
+    };
+    const raf = requestAnimationFrame(measure);
+    const late = setTimeout(measure, 350); // after the chat's open animation settles
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
+    [controlsRef.current, detailBoxRef.current].forEach((n) => n && ro?.observe(n));
+    window.addEventListener('resize', measure);
+    return () => {
+      cancelAnimationFrame(raf);
+      clearTimeout(late);
+      ro?.disconnect();
+      window.removeEventListener('resize', measure);
+    };
+  }, [chatOpen, narrow, detail]);
+  const besideChat = underChat.controls ? 'lg:right-[26rem]' : '';
+  const detailBesideChat = underChat.detail ? 'lg:right-[29rem]' : '';
   const [sheetExpanded, setSheetExpanded] = useState(false); // phone weather sheet: peek or full
   const [formCollapsed, setFormCollapsed] = useState(false); // phone: directions form folded to one line
   const sheetTouch = useRef(null);
@@ -1532,6 +1564,7 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
 
       {/* ---------- map controls ---------- */}
       <div
+        ref={controlsRef}
         className={`absolute right-3 top-[var(--map-top)] z-[35] flex-col items-end gap-2 transition-[right] duration-300 sm:top-3 ${besideChat} ${
           sheetCovers ? 'hidden' : 'flex'
         }`}
@@ -1598,6 +1631,7 @@ const MapPage = ({ weather, theme = 'dark', visible = true, initialRoute, onRout
       {/* ---------- weather detail panel ---------- */}
       {detail && (
         <div
+          ref={detailBoxRef}
           className={`absolute inset-x-3 bottom-[var(--map-bottom)] z-[38] animate-fade-in-up transition-[right] duration-300 sm:bottom-3 sm:left-auto sm:right-16 sm:w-[21rem] lg:bottom-auto lg:top-3 ${detailBesideChat}`}
         >
           <div
