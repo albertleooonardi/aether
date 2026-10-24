@@ -13,12 +13,41 @@
 
 # misc
 .DS_Store
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Claude Code (local agents, settings and session state)
+.claude/
+
+# Local docs and the eval harness. docs/images stays tracked: the README's
+# screenshots live there.
+/docs/*
+!/docs/images/
+/evals/
+
+# Environment files: every .env variant stays local; only the template is committed
 .env
+.env.*
+!.env.example
+
+# Credentials and keys
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.keystore
+*.jks
+credentials*.json
+service-account*.json
+*-service-account.json
+secrets.json
+secrets/
+.npmrc
+.netrc
+
+# Vercel / Supabase local state (can hold project tokens)
+.vercel
+supabase/.temp/
+supabase/.branches/
